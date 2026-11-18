@@ -38,7 +38,7 @@ jobs:
         id: sync
         run: |
           set -euo pipefail
-          git remote add upstream https://github.com/jxxghp/${UPSTREAM_REPO}.git
+          git remote add upstream https://github.com/${UPSTREAM_REPO}.git
           git fetch upstream v3
           NEW_COMMITS=$(git rev-list --count HEAD..upstream/v3)
           echo "upstream new commits: ${NEW_COMMITS}"
