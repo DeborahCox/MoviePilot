@@ -107,3 +107,6 @@ docker-compose*
 # 桌面打包资源
 app.ico
 frozen.spec
+
+# CI 前端源码工作目录（node_modules 不应进入构建上下文）
+frontend-src/
