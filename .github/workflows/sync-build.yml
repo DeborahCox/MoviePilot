@@ -148,8 +148,9 @@ jobs:
         working-directory: frontend-src
         run: |
           set -euo pipefail
-          yarn install --frozen-lockfile --network-timeout 600000 2>&1 | grep -v "Workspaces can only be enabled in private projects." || true
-          test -d node_modules || { echo "yarn install failed"; exit 1; }
+          yarn install --frozen-lockfile --network-timeout 600000 2>&1 | grep -v "Workspaces can only be enabled in private projects."
+          yarn_rc=${PIPESTATUS[0]}
+          [ "${yarn_rc}" -eq 0 ] || { echo "yarn install failed (rc=${yarn_rc})"; exit "${yarn_rc}"; }
           yarn build
           test -f dist/index.html
           mkdir -p "$GITHUB_WORKSPACE/frontend-dist"
