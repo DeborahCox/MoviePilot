@@ -784,6 +784,24 @@ class SiteChain(InteractionChainMixin, ChainBase):
         except Exception as e:
             return False, f"{str(e)}！"
 
+    def test_snapshot(self, site_info: SiteSnapshot) -> Tuple[bool, str]:
+        try:
+            domain = site_domain(site_info.url)
+            indexer = SitesHelper().get_indexer(domain) or {}
+            snapshot = site_info
+            snapshot_values = {field.name: getattr(snapshot, field.name) for field in fields(snapshot)}
+            result: Optional[SiteConnectionResult] = self.run_module(
+                "test_site", site={**indexer, **snapshot_values, "domain": snapshot.url},
+                raise_exception=True,
+            )
+            if result is not None and result.supported:
+                return result.success, result.message
+            return self.__test(
+                replace(snapshot, url=site_rules.resolve_page_url(snapshot.url, indexer.get("login_path")))
+            )
+        except Exception as e:
+            return False, f"{str(e)}！"
+
     def __test(self, site_info: SiteSnapshot) -> Tuple[bool, str]:
         """
         通用站点测试

@@ -39,6 +39,7 @@ from app.api.endpoints.settings import router as system_settings_router
 from app.api.principal import ApiPrincipal
 from app.api.response import CompatibleCountParam, CompatiblePageParam, ResponseAPIRouter
 from app.application.backup import DatabaseBackupInProgressError
+from app.application.connection.service import test_connection as _test_connection
 from app.application.configuration import (
     get_configured_system_config,
     get_runtime_settings,
@@ -75,6 +76,8 @@ from app.schemas.common import JsonObject as _SchemaJsonObject
 from app.schemas.common import JsonObjectList as _SchemaJsonObjectList
 from app.schemas.common import TimeData as _SchemaTimeData
 from app.schemas.common import ValueData as _SchemaValueData
+from app.schemas.connection import ConnectionTestData as _SchemaConnectionTestData
+from app.schemas.connection import ConnectionTestRequest as _SchemaConnectionTestRequest
 from app.schemas.response import Response as _SchemaResponse
 from app.schemas.system import DatabaseBackupArtifactData as _SchemaDatabaseBackupArtifactData
 from app.schemas.system import DatabaseBackupVerificationData as _SchemaDatabaseBackupVerificationData
@@ -1195,4 +1198,22 @@ def run_scheduler2(jobid: str, _: Annotated[str, Depends(verify_apitoken)]) -> _
 
 
 # 设置实现由独立模块维护，路由仍挂载到原有 system 入口。
+@router.post(
+    "/connection/test",
+    summary="测试连接类配置连通性",
+    response_model=_SchemaResponse[_SchemaConnectionTestData],
+)
+async def test_connection(
+    payload: _SchemaConnectionTestRequest,
+    _: ApiPrincipal = Depends(get_current_active_superuser),
+) -> Any:
+    config = dict(payload.config or {})
+    if payload.type:
+        config.setdefault("type", payload.type)
+    if payload.name:
+        config.setdefault("name", payload.name)
+    data = await anyio.to_thread.run_sync(_test_connection, payload.category, config)
+    return _SchemaResponse(success=True, data=data)
+
+
 router.routes.extend(system_settings_router.routes)
