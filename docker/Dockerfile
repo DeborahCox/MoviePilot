@@ -184,7 +184,8 @@ RUN mkdir -p /opt/python \
         --locked \
         --no-default-groups \
         --group runtime-standard \
-        --no-install-project
+        --no-install-project \
+    && (find ${VENV_PATH} /opt/python -xdev -exec touch -h -d "2020-01-01T00:00:00Z" {} + 2>/dev/null || true)
 
 
 # 自由线程版 Python 的原生依赖需要 Rust 和 C 构建工具链。
@@ -233,7 +234,8 @@ FROM verify_venv_${MOVIEPILOT_PYTHON_VARIANT} AS prepare_venv
 COPY --from=prepare_cjk /native/ ${VENV_PATH}/lib/moviepilot/
 COPY --from=prepare_cjk /build/fts5_cjk/install.py /tmp/verify-cjk.py
 RUN "${VENV_PATH}/bin/python" /tmp/verify-cjk.py --check \
-    && rm /tmp/verify-cjk.py
+    && rm /tmp/verify-cjk.py \
+    && (find ${VENV_PATH} /opt/python -xdev -exec touch -h -d "2020-01-01T00:00:00Z" {} + 2>/dev/null || true)
 
 # 准备后端源码
 FROM base AS prepare_backend
