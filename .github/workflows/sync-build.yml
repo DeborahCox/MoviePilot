@@ -183,8 +183,8 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:${{ steps.release.outputs.tag }}
             ${{ env.IMAGE }}:latest
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=registry,ref=ghcr.io/deborahcox/moviepilot:buildcache
+          cache-to: type=registry,ref=ghcr.io/deborahcox/moviepilot:buildcache,mode=max
           build-args: |
             MOVIEPILOT_PYTHON_VARIANT=standard
             MOVIEPILOT_RESOURCES_REF=08e38b49
