@@ -352,8 +352,8 @@ COPY --from=ffmpeg /ffmpeg /ffprobe /usr/local/bin/
 COPY --from=rclone /usr/local/bin/rclone /usr/bin/rclone
 
 # Python 运行环境
-COPY --link --from=prepare_venv --chmod=777 ${VENV_PATH} ${VENV_PATH}
-COPY --link --from=prepare_venv /opt/python /opt/python
+COPY --from=prepare_venv --chmod=777 ${VENV_PATH} ${VENV_PATH}
+COPY --from=prepare_venv /opt/python /opt/python
 COPY --from=uv /uv /usr/local/bin/uv
 
 # 准备容器控制面和运行目录
