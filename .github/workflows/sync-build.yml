@@ -61,9 +61,11 @@ jobs:
     steps:
       - name: Resolve upstream latest release
         id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          TAG=$(curl -sf "https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest" | jq -r '.tag_name')
+          TAG=$(curl -sf -H "Authorization: Bearer ${GH_TOKEN}" "https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest" | jq -r '.tag_name')
           test -n "${TAG}" && test "${TAG}" != "null"
           echo "upstream latest release: ${TAG}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
