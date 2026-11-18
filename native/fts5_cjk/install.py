@@ -91,6 +91,8 @@ def compiler_command(output: Path) -> list[str]:
     flags = ["-dynamiclib"] if sys.platform == "darwin" else ["-shared"]
     if sys.platform != "win32":
         flags.append("-fPIC")
+    if sys.platform != "darwin":
+        flags.extend(["-Wl,--build-id=none", "-ffile-prefix-map=/build=/src"])
     return [*compiler, *flags, "-O2", "-Wall", "-Wextra", f"-I{headers}", source, "-o", str(output)]
 
 
