@@ -107,7 +107,20 @@ jobs:
           repository: ${{ env.FRONTEND_REPO }}
           ref: ${{ env.FRONTEND_REF }}
           path: frontend-src
-          fetch-depth: 1
+          fetch-depth: 0
+
+      - name: Sync frontend with upstream
+        if: steps.image.outputs.build == 'true'
+        working-directory: frontend-src
+        run: |
+          set -euo pipefail
+          git remote add upstream https://github.com/jxxghp/MoviePilot-Frontend.git
+          git fetch upstream v3
+          NEW_COMMITS=$(git rev-list --count HEAD..upstream/v3)
+          echo "frontend upstream new commits: ${NEW_COMMITS}"
+          if [ "${NEW_COMMITS}" != "0" ]; then
+            git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" rebase upstream/v3
+          fi
 
       - name: Set up Node
         if: steps.image.outputs.build == 'true'
