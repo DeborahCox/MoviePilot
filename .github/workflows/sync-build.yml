@@ -52,7 +52,8 @@ jobs:
 
       - name: Summary
         if: always()
-        run: echo "sync updated: ${{ steps.sync.outputs.updated }}" >> "$GITHUB_STEP_SUMMARY"
+        run: |
+          echo "sync updated: ${{ steps.sync.outputs.updated }}" >> "$GITHUB_STEP_SUMMARY"
 
   build:
     needs: sync
