@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: '23 */6 * * *'
   workflow_dispatch:
+    inputs:
+      force_build:
+        description: 'Rebuild image even if the release tag already exists'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -72,6 +77,8 @@ jobs:
 
       - name: Skip if image tag already exists
         id: image
+        env:
+          FORCE_BUILD: ${{ inputs.force_build }}
         run: |
           set -euo pipefail
           TOKEN=$(curl -sf "https://ghcr.io/token?scope=repository:deborahcox/moviepilot:pull&service=ghcr.io" | jq -r '.token')
@@ -80,7 +87,7 @@ jobs:
             -H "Accept: application/vnd.oci.image.index.v1+json" \
             "https://ghcr.io/v2/deborahcox/moviepilot/manifests/${{ steps.release.outputs.tag }}")
           echo "manifest status: ${CODE}"
-          if [ "${CODE}" = "200" ]; then
+          if [ "${CODE}" = "200" ] && [ "${FORCE_BUILD}" != "true" ]; then
             echo "build=false" >> "$GITHUB_OUTPUT"
           else
             echo "build=true" >> "$GITHUB_OUTPUT"
