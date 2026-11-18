@@ -159,5 +159,6 @@ jobs:
             ${{ env.IMAGE }}:latest
           build-args: |
             MOVIEPILOT_PYTHON_VARIANT=standard
+            MOVIEPILOT_RESOURCES_REF=08e38b49
           labels: |
             org.opencontainers.image.description=MoviePilot fork build with connectivity-test patch
