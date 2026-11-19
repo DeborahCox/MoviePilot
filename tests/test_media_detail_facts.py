@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.api.endpoints import media as media_endpoint
+from app.application import media as media_application
 from app.domain.context import MediaInfo as CoreMediaInfo
 from app.domain.projection import tmdb as tmdb_projection
 from app.schemas.types import MediaSource, MediaType
@@ -68,8 +69,8 @@ async def _request_detail(monkeypatch: pytest.MonkeyPatch) -> dict:
     chain.async_recognize_media = AsyncMock(return_value=_media_info())
     chain.async_obtain_images = AsyncMock(return_value=None)
     monkeypatch.setattr(media_endpoint, "MediaChain", Mock(return_value=chain))
-    monkeypatch.setattr(media_endpoint, "ImdbApi", _FakeImdbApi)
-    monkeypatch.setattr(media_endpoint, "get_runtime_setting", lambda name: None)
+    monkeypatch.setattr(media_application, "_load_imdb_api", lambda: _FakeImdbApi)
+    monkeypatch.setattr(media_application, "get_runtime_setting", lambda name: None)
 
     app = FastAPI()
     app.dependency_overrides[media_endpoint.verify_token] = lambda: None
