@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import time
 import traceback
 from dataclasses import dataclass
@@ -53,6 +54,24 @@ def _sanitize_config(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _client_supports_probe_only(client_cls: Any) -> bool:
+    """
+    判断客户端构造函数是否显式声明了 probe_only 只读探测参数。
+
+    仅识别显式声明的形参：依赖 **kwargs 吞掉 probe_only 会被视为不支持，
+    避免注入一个静默失效的参数。
+    """
+    try:
+        parameters = inspect.signature(client_cls.__init__).parameters
+    except (TypeError, ValueError):
+        return False
+    probe = parameters.get("probe_only")
+    return probe is not None and probe.kind in (
+        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        inspect.Parameter.KEYWORD_ONLY,
+    )
+
+
 def _redact(text: str, config: dict[str, Any]) -> str:
     if not text:
         return text
@@ -84,7 +103,11 @@ def probe_downloader(dtype: str, config: dict[str, Any]) -> ProbeOutcome:
     if not target:
         return ProbeOutcome(ok=False, message=f"暂不支持的下载器类型：{dtype}", error_type="UnsupportedType")
     client_cls = _import_symbol(*target)
-    client = client_cls(**_sanitize_config(config))
+    probe_config = _sanitize_config(config)
+    if _client_supports_probe_only(client_cls):
+        # 连接测试必须是只读操作：探测模式下客户端跳过下载器全局设置同步。
+        probe_config["probe_only"] = True
+    client = client_cls(**probe_config)
     info = client.transfer_info()
     if not info:
         return ProbeOutcome(ok=False, message="连接成功但无法读取传输状态，请检查地址与凭据", error_type="ProbeFailed")

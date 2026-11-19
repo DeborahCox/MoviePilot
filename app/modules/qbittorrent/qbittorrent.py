@@ -39,6 +39,7 @@ class Qbittorrent:
                  category: Optional[bool] = False, sequentail: Optional[bool] = False,
                  force_resume: Optional[bool] = False, first_last_piece: bool = False,
                  incomplete_files_ext: Optional[bool] = True,
+                 probe_only: bool = False,
                  **kwargs: object) -> None:
         """
         根据显式配置连接 qBittorrent，并同步未完成文件后缀开关。
@@ -53,9 +54,11 @@ class Qbittorrent:
         :param force_resume: 是否允许强制启动下载和做种
         :param first_last_piece: 是否优先下载首尾分块
         :param incomplete_files_ext: 是否给未完成文件追加 .!qB 后缀，会同步至下载器全局设置
+        :param probe_only: 只读探测模式；连接测试等场景传入 True，跳过所有下载器全局设置同步
         :param kwargs: 为通用服务配置保留的额外参数，当前不读取
         """
         self.qbc: Optional[Client] = None
+        self._probe_only = probe_only
         self._host: Optional[str] = None
         self._port: Optional[int] = None
         self._force_resume = force_resume
@@ -280,7 +283,8 @@ class Qbittorrent:
                 stack_trace = "".join(traceback.format_exception(None, e, e.__traceback__))[:2000]
                 logger.error(f"qbittorrent 登录失败：{str(e)}\n{stack_trace}")
                 return None
-            self.__sync_incomplete_file_suffix(qbt, enabled=bool(self._incomplete_files_ext))
+            if not self._probe_only:
+                self.__sync_incomplete_file_suffix(qbt, enabled=bool(self._incomplete_files_ext))
             return qbt
         except Exception as err:
             logger.error(f"qbittorrent 连接出错：{str(err)}")
