@@ -577,6 +577,7 @@ class DownloadSubmissionOwner(_DownloadResourceOwner):
                         return_detail: bool = False,
                         custom_words: Optional[str] = None,
                         governance: Optional[SubscriptionDownloadGovernance] = None,
+                        download_category: Optional[str] = None,
                         ) -> Union[Optional[str], Tuple[Optional[str], Optional[str]]]:
         """
         下载单个资源并发送结果通知。
@@ -598,6 +599,7 @@ class DownloadSubmissionOwner(_DownloadResourceOwner):
             return_detail=return_detail,
             custom_words=custom_words,
             governance=governance,
+            download_category=download_category,
         )
 
     def _execute_download_single(
@@ -616,6 +618,7 @@ class DownloadSubmissionOwner(_DownloadResourceOwner):
         return_detail: bool = False,
         custom_words: Optional[str] = None,
         governance: Optional[SubscriptionDownloadGovernance] = None,
+        download_category: Optional[str] = None,
     ) -> Union[Optional[str], Tuple[Optional[str], Optional[str]]]:
         """
         准备下载事实，提交下载器并按订阅治理合同结算结果。
@@ -654,6 +657,7 @@ class DownloadSubmissionOwner(_DownloadResourceOwner):
             label=label,
             custom_words=custom_words,
             governance=governance,
+            download_category=download_category,
         )
         if governance:
             governance.report(context, "submitted" if download_hash else "failed",
@@ -837,6 +841,7 @@ class DownloadSubmissionOwner(_DownloadResourceOwner):
         label: Optional[str],
         custom_words: Optional[str],
         governance: Optional[SubscriptionDownloadGovernance],
+        download_category: Optional[str] = None,
     ) -> tuple[Optional[str], Optional[str]]:
         """
         在可取消边界后调用下载器，并分派成功或拒绝结算。
@@ -852,7 +857,9 @@ class DownloadSubmissionOwner(_DownloadResourceOwner):
             logger.info(f"开始下载【{submission_label}】{prepared.torrent.title} ...")
         if governance and governance.mark_started:
             governance.mark_started()
-        category = prepared.media.category
+        custom_category = (download_category or "").strip()
+        # 手动指定的分类只覆盖提交给下载器的值，不改写媒体的目录或元数据分类。
+        category = custom_category or prepared.media.category
         # 音乐尚无目录分类时仍提供稳定的下载器分类，不回写媒体的目录或元数据分类。
         if not category and prepared.media.type == MediaType.MUSIC:
             category = MediaType.MUSIC.value
