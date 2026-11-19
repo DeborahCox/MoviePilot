@@ -40,7 +40,8 @@ class Transmission:
 
     def __init__(self, host: Optional[str] = None, port: Optional[int] = None,
                  username: Optional[str] = None, password: Optional[str] = None,
-                 rename_partial_files: Optional[bool] = True, **kwargs: object) -> None:
+                 rename_partial_files: Optional[bool] = True,
+                 probe_only: bool = False, **kwargs: object) -> None:
         """
         根据显式配置连接 Transmission，并同步未完成文件后缀开关。
 
@@ -49,9 +50,11 @@ class Transmission:
         :param username: RPC 登录用户名
         :param password: RPC 登录密码
         :param rename_partial_files: 是否给未完成文件追加 .part 后缀，会同步到下载器全局设置
+        :param probe_only: 只读探测模式；连接测试等场景传入 True，跳过所有下载器全局设置同步
         :param kwargs: 同时提供 host 和 port 时，protocol 指定协议，默认 http；其余参数当前不读取
         """
         self.trc: Optional[Client] = None
+        self._probe_only = probe_only
         self._host: Optional[str] = None
         self._port: Optional[int] = None
         self._protocol: object
@@ -115,7 +118,8 @@ class Transmission:
                                           password=self._password,
                                           # transmission-rpc 运行时接受 Requests 的连接与读取超时二元组。
                                           timeout=(3, 60))
-            self.__sync_incomplete_file_suffix(trt, enabled=bool(self._rename_partial_files))
+            if not self._probe_only:
+                self.__sync_incomplete_file_suffix(trt, enabled=bool(self._rename_partial_files))
             return trt
         except Exception as err:
             logger.error(f"transmission 连接出错：{str(err)}")
