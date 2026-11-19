@@ -1935,6 +1935,9 @@ class MediaInfo:
     :param poster_path: 海报图片
     :param logo_path: 媒体标志图片地址
     :param vote_average: 评分
+    :param imdbRating: IMDb 聚合评分（十分制）
+    :param budget: 电影成本（USD）
+    :param revenue: 电影收入（USD）
     :param overview: 描述
     :param genre_ids: 风格ID
     :param names: 所有别名和译名
@@ -2010,6 +2013,9 @@ class MediaInfo:
     poster_path: Optional[str] = None
     logo_path: Optional[str] = None
     vote_average: Optional[float] = None
+    imdbRating: Optional[float] = None
+    budget: Optional[int] = None
+    revenue: Optional[int] = None
     overview: Optional[str] = None
     genre_ids: list[int] = field(default_factory=list)
     names: list[str] = field(default_factory=list)

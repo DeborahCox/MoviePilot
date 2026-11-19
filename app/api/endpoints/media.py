@@ -2,6 +2,7 @@
 提供媒体识别、详情、图片和季集信息查询接口。
 """
 
+import asyncio
 from pathlib import Path
 from typing import Annotated, Any, List, Optional, Union, cast
 from uuid import UUID
@@ -45,6 +46,8 @@ from app.domain.media import is_music_media_source, normalize_music_type, parse_
 from app.domain.meta.metabase import MetaBase
 from app.domain.meta.metamusic import MetaMusic
 from app.domain.metainfo import MetaInfo, MetaInfoPath
+from app.modules.imdb.api import ImdbApi
+from app.runtime.settings import get_runtime_setting
 from app.schemas.category import CategoryConfig as _SchemaCategoryConfig
 from app.schemas.category import MediaCategoryMap as _SchemaMediaCategoryMap
 from app.schemas.context import Context as _SchemaContext
@@ -890,6 +893,30 @@ async def seasons(
     return []
 
 
+async def _query_imdb_rating(imdb_id: str) -> Optional[float]:
+    """
+    异步查询 IMDb 聚合评分，最多等待 2 秒；失败时返回 None，不影响详情主响应。
+    """
+    api: Optional[ImdbApi] = None
+    try:
+        api = ImdbApi(proxies=get_runtime_setting('PROXY'))
+        title = await asyncio.wait_for(api.async_get_title(imdb_id), timeout=2)
+        rating = getattr(getattr(title, "rating", None), "aggregate_rating", None)
+        if isinstance(rating, (int, float)) and not isinstance(rating, bool):
+            value = float(rating)
+            if 0 < value <= 10:
+                return value
+    except Exception:
+        return None
+    finally:
+        if api is not None:
+            try:
+                api.close()
+            except Exception:
+                pass
+    return None
+
+
 @router.get("/{media_id}", summary="查询媒体详情", response_model=_SchemaMediaDetailResult)
 async def detail(
     media_id: str,
@@ -921,6 +948,9 @@ async def detail(
             slug = mediachain.tvdb_slug(mediainfo.tvdb_id)
             if slug:
                 mediainfo.tvdb_slug = slug
-        return mediainfo.to_dict()
+        payload = mediainfo.to_dict()
+        if mediainfo.imdb_id and str(mediainfo.imdb_id).startswith('tt'):
+            payload["imdbRating"] = await _query_imdb_rating(str(mediainfo.imdb_id))
+        return payload
 
     return _SchemaMediaInfo()
