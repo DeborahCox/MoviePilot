@@ -2,6 +2,7 @@
 下载链到 qBittorrent SDK 的分类与自动管理参数回归。
 """
 
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -12,7 +13,20 @@ from app.chain.download import DownloadChain
 from app.domain.context import Context, MediaInfo, MusicInfo
 from app.modules.qbittorrent import QbittorrentModule
 from app.modules.qbittorrent.qbittorrent import Qbittorrent
+from app.schemas.context import MediaInfo as SchemaMediaInfo
+from app.schemas.context import TorrentInfo as SchemaTorrentInfo
 from app.schemas.types import MediaType
+
+
+def _download_api_module():
+    """
+    端点模块依赖 Python 3.14 的延迟注解语义；本地低版本仅跳过端点用例。
+    """
+    if sys.version_info < (3, 14):
+        pytest.skip("下载端点模块需要 Python 3.14 的延迟注解语义")
+    from app.api.endpoints import download as download_api
+
+    return download_api
 
 
 @pytest.fixture
@@ -101,3 +115,79 @@ def test_download_category_reaches_qbittorrent_sdk(
     assert media.to_dict() == original_media
     chain._settle_accepted_download.assert_called_once()
     chain._record_rejected_download.assert_not_called()
+
+
+def test_manual_category_overrides_downloader_category_without_touching_media(qb_download):
+    """
+    手动分类只覆盖提交给下载器的值，媒体目录分类保持原样。
+    """
+    chain, server, torrent_hash = qb_download
+    server._category = True
+    media = MediaInfo(
+        type=MediaType.MOVIE, media_source="douban", media_id="1001",
+        title="示例影视", library_category="外语电影",
+    )
+    original_media = media.to_dict()
+    prepared = SimpleNamespace(
+        torrent_content=f"magnet:?xt=urn:btih:{torrent_hash}",
+        torrent=SimpleNamespace(site_cookie=""),
+        download_dir=Path("/downloads/requested"),
+        media=media,
+        site_downloader=None,
+    )
+
+    result, _message = chain._submit_prepared_download(
+        prepared=prepared, context=Context(media_info=media), episodes=None,
+        channel=None, source="Manual", downloader="qb", userid=None, username=None,
+        label=None, custom_words=None, governance=None,
+        download_category="  精选电影  ",
+    )
+
+    assert result == torrent_hash
+    submitted = server.qbc.torrents_add.call_args.kwargs
+    assert submitted["category"] == "精选电影"
+    assert media.to_dict() == original_media
+
+
+def test_download_endpoint_forwards_custom_category(monkeypatch):
+    """
+    含媒体信息的下载接口把自定义分类交给下载链。
+    """
+    download_api = _download_api_module()
+    chain = Mock()
+    chain.download_single.return_value = "task-1"
+    monkeypatch.setattr(download_api, "DownloadChain", lambda: chain)
+
+    response = download_api.download(
+        media_in=SchemaMediaInfo(type="电影", title="示例影视"),
+        torrent_in=SchemaTorrentInfo(title="示例影视.2024", category="movie"),
+        downloader="qb",
+        save_path="/downloads/requested",
+        download_category="精选电影",
+        current_user=SimpleNamespace(name="tester"),
+    )
+
+    assert response.success is True
+    assert chain.download_single.call_args.kwargs["download_category"] == "精选电影"
+
+
+def test_add_endpoint_forwards_custom_category(monkeypatch):
+    """
+    不含媒体信息的下载接口同样传递自定义分类。
+    """
+    download_api = _download_api_module()
+    chain = Mock()
+    chain.download_single.return_value = "task-2"
+    media_chain = Mock()
+    media_chain.recognize_by_meta.return_value = MediaInfo(type=MediaType.MOVIE, title="示例影视")
+    monkeypatch.setattr(download_api, "DownloadChain", lambda: chain)
+    monkeypatch.setattr(download_api, "MediaChain", lambda: media_chain)
+
+    response = download_api.add(
+        torrent_in=SchemaTorrentInfo(title="示例影视.2024", category="movie"),
+        download_category="精选电影",
+        current_user=SimpleNamespace(name="tester"),
+    )
+
+    assert response.success is True
+    assert chain.download_single.call_args.kwargs["download_category"] == "精选电影"

@@ -245,6 +245,7 @@ def download(
     torrent_in: _SchemaTorrentInfo,
     downloader: Annotated[str | None, Body()] = None,
     save_path: Annotated[str | None, Body()] = None,
+    download_category: Annotated[str | None, Body()] = None,
     current_user: ApiPrincipal = Depends(get_current_active_user),
 ) -> Any:
     """
@@ -268,6 +269,7 @@ def download(
         context=context,
         username=current_user.name,
         save_path=save_path,
+        download_category=download_category,
         source="Manual",
     )
     if not did:
@@ -354,6 +356,7 @@ def add(
     downloader: Annotated[str | None, Body()] = None,
     # 保存路径, 支持<storage>:<path>（如rclone:/MP, smb:/server/share/Movies）或已配置下载目录的名称（别名）
     save_path: Annotated[str | None, Body()] = None,
+    download_category: Annotated[str | None, Body()] = None,
     current_user: ApiPrincipal = Depends(get_current_active_user),
 ) -> Any:
     """
@@ -381,6 +384,7 @@ def add(
         username=current_user.name,
         downloader=downloader,
         save_path=save_path,
+        download_category=download_category,
         source="Manual",
     )
     if not did:
