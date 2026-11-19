@@ -159,6 +159,9 @@ def project(
     if media_type == MediaType.MOVIE:
         builder.set("title", info.get("title"))
         builder.set("original_title", info.get("original_title"))
+        # 成本与收入属于电影详情字段，随投影透传到详情接口
+        builder.set("budget", info.get("budget"))
+        builder.set("revenue", info.get("revenue"))
         release_date = info.get("release_date")
         builder.set("release_date", release_date)
         if release_date:
