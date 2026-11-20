@@ -29,6 +29,15 @@ def test_fork_frontend_bundle_includes_plugin_icons() -> None:
     assert workflow.index("public/plugin_icon") < workflow.index('yarn build')
 
 
+def test_fork_image_uses_release_version_and_pinned_resources() -> None:
+    workflow = _read(SYNC_WORKFLOW)
+    assert 'git ls-remote https://github.com/jxxghp/MoviePilot-Resources.git' in workflow
+    assert 'MOVIEPILOT_RESOURCES_REF=${{ steps.resources.outputs.sha }}' in workflow
+    assert 'org.moviepilot.resources-revision=${{ steps.resources.outputs.sha }}' in workflow
+    assert workflow.index('name: Stamp image release version') < workflow.index('name: Build and push image')
+    assert 'assert version.APP_VERSION == version.FRONTEND_VERSION == os.environ["RELEASE_TAG"]' in workflow
+
+
 def test_build_context_excludes_runtime_state_and_keeps_release_inputs() -> None:
     """
     本地运行数据不得进入构建上下文，发布所需入口必须保留。
