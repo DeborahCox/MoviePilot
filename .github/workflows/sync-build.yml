@@ -200,6 +200,22 @@ jobs:
           path: dist.zip
           retention-days: 1
 
+      - name: Pin site resources
+        id: resources
+        run: |
+          set -euo pipefail
+          sha=$(git ls-remote https://github.com/jxxghp/MoviePilot-Resources.git refs/heads/main | awk '{print $1}')
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]]
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Stamp image release version
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+          python3 -c 'import os, pathlib, re; p=pathlib.Path("version.py"); s=p.read_text(); s,n=re.subn(r"^(APP_VERSION|FRONTEND_VERSION)\s*=\s*[^\n]+", lambda m: m.group(1)+" = \x27"+os.environ["RELEASE_TAG"]+"\x27", s, flags=re.M); assert n == 2; p.write_text(s)'
+          python3 -c 'import os, version; assert version.APP_VERSION == version.FRONTEND_VERSION == os.environ["RELEASE_TAG"]'
+
       - name: Set up QEMU
         if: steps.image.outputs.build == 'true'
         uses: docker/setup-qemu-action@v3
@@ -231,8 +247,10 @@ jobs:
           cache-to: type=registry,ref=ghcr.io/deborahcox/moviepilot:buildcache,mode=max
           build-args: |
             MOVIEPILOT_PYTHON_VARIANT=standard
+            MOVIEPILOT_RESOURCES_REF=${{ steps.resources.outputs.sha }}
           labels: |
             org.opencontainers.image.description=MoviePilot fork build with connectivity-test patch
+            org.moviepilot.resources-revision=${{ steps.resources.outputs.sha }}
 
   publish-update:
     needs: build
