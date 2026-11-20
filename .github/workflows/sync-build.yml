@@ -9,17 +9,13 @@ on:
         description: 'Rebuild image even if the release tag already exists'
         type: boolean
         default: false
-      release_version:
-        description: 'Immutable fork release version (for example v3.2.8-1)'
-        type: string
-        required: false
 
 permissions:
   contents: write
   packages: write
 
 concurrency:
-  group: sync-build-${{ inputs.release_version != '' && 'release' || 'sync' }}
+  group: sync-build-v3
   cancel-in-progress: false
 
 env:
@@ -31,6 +27,8 @@ env:
 jobs:
   sync:
     runs-on: ubuntu-latest
+    outputs:
+      backend_sha: ${{ steps.sync.outputs.sha }}
     steps:
       - name: Checkout fork v3
         uses: actions/checkout@v4
@@ -43,7 +41,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Rebase onto upstream v3
+      - name: Merge upstream v3
         id: sync
         run: |
           set -euo pipefail
@@ -53,11 +51,12 @@ jobs:
           echo "upstream new commits: ${NEW_COMMITS}"
           if [ "${NEW_COMMITS}" = "0" ]; then
             echo "updated=false" >> "$GITHUB_OUTPUT"
-            exit 0
+          else
+            git merge --no-edit upstream/v3
+            git push origin HEAD:v3
+            echo "updated=true" >> "$GITHUB_OUTPUT"
           fi
-          git rebase upstream/v3
-          git push --force-with-lease origin v3
-          echo "updated=true" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Summary
         if: always()
@@ -66,8 +65,12 @@ jobs:
 
   build:
     needs: sync
-    if: github.event_name != 'workflow_dispatch' || inputs.release_version == ''
     runs-on: ubuntu-latest
+    outputs:
+      backend_sha: ${{ needs.sync.outputs.backend_sha }}
+      frontend_sha: ${{ steps.frontend.outputs.sha }}
+      upstream_tag: ${{ steps.release.outputs.tag }}
+      built: ${{ steps.image.outputs.build }}
     steps:
       - name: Resolve upstream latest release
         id: release
@@ -76,7 +79,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG=$(curl -sf -H "Authorization: Bearer ${GH_TOKEN}" "https://api.github.com/repos/${UPSTREAM_REPO}/releases/latest" | jq -r '.tag_name')
-          test -n "${TAG}" && test "${TAG}" != "null"
+          [[ "$TAG" =~ ^v3\.[0-9]+\.[0-9]+$ ]] || { echo "Unsupported upstream tag: $TAG" >&2; exit 1; }
           echo "upstream latest release: ${TAG}"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
@@ -84,8 +87,15 @@ jobs:
         id: image
         env:
           FORCE_BUILD: ${{ inputs.force_build }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
+          releases=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name')
+          if ! grep -Fxq "$TAG-1" <<< "$releases"; then
+            echo "build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           TOKEN=$(curl -sf "https://ghcr.io/token?scope=repository:deborahcox/moviepilot:pull&service=ghcr.io" | jq -r '.token')
           CODE=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer ${TOKEN}" \
@@ -99,14 +109,25 @@ jobs:
           fi
 
       - name: Checkout backend (fork v3)
-        if: steps.image.outputs.build == 'true'
         uses: actions/checkout@v4
         with:
-          ref: v3
-          fetch-depth: 1
+          ref: ${{ needs.sync.outputs.backend_sha }}
+          fetch-depth: 0
+
+      - name: Verify backend release ancestry
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags "https://github.com/${UPSTREAM_REPO}.git" "refs/tags/$TAG:refs/tags/upstream-release"
+          release_commit=$(git rev-parse 'refs/tags/upstream-release^{commit}')
+          if [[ "$(git log -1 --format=%s "$release_commit")" == 'build(plugin-market): sync default from MoviePilot-Wiki@'* ]]; then
+            release_commit=$(git rev-parse "$release_commit^1")
+          fi
+          git merge-base --is-ancestor "$release_commit" HEAD || { echo 'Backend Fork does not contain the upstream release' >&2; exit 1; }
+          TAG="$TAG" python3 -c 'import os, version; assert version.APP_VERSION == version.FRONTEND_VERSION == os.environ["TAG"], "Fork v3 version does not match upstream release"'
 
       - name: Checkout frontend (fork v3)
-        if: steps.image.outputs.build == 'true'
         uses: actions/checkout@v4
         with:
           repository: ${{ env.FRONTEND_REPO }}
@@ -114,31 +135,26 @@ jobs:
           path: frontend-src
           fetch-depth: 0
 
-      - name: Sync frontend with upstream
-        if: steps.image.outputs.build == 'true'
+      - name: Pin and verify frontend Fork
+        id: frontend
         working-directory: frontend-src
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
-          git remote add upstream https://github.com/jxxghp/MoviePilot-Frontend.git
-          git fetch upstream v3
-          NEW_COMMITS=$(git rev-list --count HEAD..upstream/v3)
-          echo "frontend upstream new commits: ${NEW_COMMITS}"
-          if [ "${NEW_COMMITS}" != "0" ]; then
-            git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" rebase upstream/v3
-          fi
+          git fetch --no-tags https://github.com/jxxghp/MoviePilot-Frontend.git "refs/tags/$TAG:refs/tags/upstream-release"
+          git merge-base --is-ancestor refs/tags/upstream-release HEAD || { echo "Frontend Fork does not contain upstream release $TAG" >&2; exit 1; }
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Node
-        if: steps.image.outputs.build == 'true'
         uses: actions/setup-node@v4
         with:
           node-version: '24'
 
       - name: Enable corepack
-        if: steps.image.outputs.build == 'true'
         run: corepack enable
 
       - name: Cache yarn dependencies
-        if: steps.image.outputs.build == 'true'
         uses: actions/cache@v4
         with:
           path: |
@@ -149,8 +165,9 @@ jobs:
             yarn-${{ runner.os }}-
 
       - name: Build frontend dist
-        if: steps.image.outputs.build == 'true'
         working-directory: frontend-src
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
         run: |
           set -euo pipefail
           yarn install --frozen-lockfile --network-timeout 600000 2>&1 | grep -v "Workspaces can only be enabled in private projects."
@@ -158,8 +175,17 @@ jobs:
           [ "${yarn_rc}" -eq 0 ] || { echo "yarn install failed (rc=${yarn_rc})"; exit "${yarn_rc}"; }
           yarn build
           test -f dist/index.html
+          printf '%s\n' "$TAG-1" > dist/version.txt
           mkdir -p "$GITHUB_WORKSPACE/frontend-dist"
           cp -a dist/. "$GITHUB_WORKSPACE/frontend-dist/"
+          zip -qr "$GITHUB_WORKSPACE/dist.zip" dist
+
+      - name: Share exact frontend bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-release
+          path: dist.zip
+          retention-days: 1
 
       - name: Set up QEMU
         if: steps.image.outputs.build == 'true'
@@ -196,91 +222,45 @@ jobs:
             org.opencontainers.image.description=MoviePilot fork build with connectivity-test patch
 
   publish-update:
-    if: github.event_name == 'workflow_dispatch' && inputs.release_version != ''
+    needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Validate release version
-        env:
-          TAG: ${{ inputs.release_version }}
-        run: |
-          set -euo pipefail
-          [[ "$TAG" =~ ^v3\.[0-9]+\.[0-9]+-[0-9]+$ ]] || { echo 'Use v3.x.y-N for a fork release' >&2; exit 1; }
-
-      - name: Checkout backend
+      - name: Checkout pinned backend
         uses: actions/checkout@v4
         with:
-          ref: v3
+          ref: ${{ needs.build.outputs.backend_sha }}
           fetch-depth: 0
-          fetch-tags: true
-
-      - name: Verify backend version and unused tag
-        env:
-          TAG: ${{ inputs.release_version }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          python3 -c 'import os, version; assert version.APP_VERSION == os.environ["TAG"] == version.FRONTEND_VERSION, "version.py must declare the requested release for both components"'
-          git fetch --tags origin
-          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null &&
-             [ "$(git rev-parse "refs/tags/$TAG^{commit}")" != "$(git rev-parse HEAD)" ]; then
-            echo "Tag $TAG points to a different commit" >&2; exit 1
-          fi
-          response=$(mktemp)
-          status=$(gh api -i "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > "$response" 2>/dev/null && echo 200 || awk 'NR == 1 {print $2}' "$response")
-          if [ "$status" = 200 ]; then
-            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.draft' | grep -qx true || { echo "Published release $TAG is immutable" >&2; exit 1; }
-          elif [ "$status" != 404 ]; then
-            echo "Unable to inspect release: HTTP $status" >&2; exit 1
-          fi
-
-      - name: Checkout frontend
-        uses: actions/checkout@v4
+      - name: Download tested frontend bundle
+        uses: actions/download-artifact@v4
         with:
-          repository: ${{ env.FRONTEND_REPO }}
-          ref: ${{ env.FRONTEND_REF }}
-          path: frontend-src
-          fetch-depth: 1
+          name: frontend-release
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '24'
-
-      - name: Build frontend release
-        working-directory: frontend-src
+      - name: Create immutable release
         env:
-          TAG: ${{ inputs.release_version }}
-        run: |
-          set -euo pipefail
-          corepack enable
-          yarn install --frozen-lockfile --network-timeout 600000
-          yarn build
-          test -f dist/index.html
-          printf '%s\n' "$TAG" > dist/version.txt
-          zip -qr "$GITHUB_WORKSPACE/dist.zip" dist
-
-      - name: Publish draft and immutable tag
-        env:
-          TAG: ${{ inputs.release_version }}
+          UPSTREAM_TAG: ${{ needs.build.outputs.upstream_tag }}
+          FRONTEND_SHA: ${{ needs.build.outputs.frontend_sha }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
-            git tag "$TAG" "$(git rev-parse HEAD)"
-            git push origin "refs/tags/$TAG"
+          TAG="$UPSTREAM_TAG-1"
+          releases=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq '.[] | select(.draft == false and .prerelease == false) | .tag_name')
+          if grep -Fxq "$TAG" <<< "$releases"; then
+            echo "Release $TAG already published; leaving it unchanged"
+            exit 0
           fi
-          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist.zip --repo "$GITHUB_REPOSITORY" --clobber
-          else
-            gh release create "$TAG" dist.zip --repo "$GITHUB_REPOSITORY" --verify-tag --draft --title "$TAG" --notes "Fork release $TAG"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null; then
+            echo "Existing tag $TAG requires manual inspection; refusing to overwrite" >&2; exit 1
           fi
-
-      - name: Verify release asset and publish
-        env:
-          TAG: ${{ inputs.release_version }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
+          backend_sha=$(git rev-parse HEAD)
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          TAG="$TAG" python3 -c 'import os, pathlib, re; p=pathlib.Path("version.py"); s=p.read_text(); s,n=re.subn(r"^(APP_VERSION|FRONTEND_VERSION)\s*=\s*[^\n]+", lambda m: m.group(1)+" = \x27"+os.environ["TAG"]+"\x27", s, flags=re.M); assert n == 2; p.write_text(s)'
+          git add version.py
+          git commit -m "chore(release): prepare $TAG"
+          git tag "$TAG"
+          git push origin "refs/tags/$TAG"
+          notes=$(printf 'Upstream: %s\nBackend source: %s\nFrontend source: %s\n' "$UPSTREAM_TAG" "$backend_sha" "$FRONTEND_SHA")
+          gh release create "$TAG" dist.zip --repo "$GITHUB_REPOSITORY" --verify-tag --draft --title "$TAG" --notes "$notes"
           expected="sha256:$(sha256sum dist.zip | awk '{print $1}')"
           actual=''
           for attempt in {1..12}; do
