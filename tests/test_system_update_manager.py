@@ -69,6 +69,25 @@ def _response(payload, status_code=200):
     return SimpleNamespace(status_code=status_code, json=lambda: payload)
 
 
+def test_fork_release_urls_and_revision_archive(monkeypatch, tmp_path):
+    """
+    Fork 更新只引用自己的发布，并接受同版本数字修订的前后端包。
+    """
+    manager = _manager(monkeypatch, tmp_path)
+    assert "repos/DeborahCox/MoviePilot/releases" in manager._BACKEND_RELEASES_API
+    assert "repos/DeborahCox/MoviePilot/releases" in manager._FRONTEND_RELEASE_API
+    assert "github.com/DeborahCox/MoviePilot/" in manager._BACKEND_ARCHIVE_URL
+    manager._backend_archive.parent.mkdir(parents=True)
+    with zipfile.ZipFile(manager._backend_archive, "w") as archive:
+        archive.writestr(
+            "MoviePilot-v3.1.0-1/version.py",
+            "APP_VERSION = 'v3.1.0-1'\nFRONTEND_VERSION = 'v3.1.0-1'\n",
+        )
+        archive.writestr("MoviePilot-v3.1.0-1/pyproject.toml", "")
+        archive.writestr("MoviePilot-v3.1.0-1/uv.lock", "")
+    assert manager._validate_backend_archive("v3.1.0-1") == "v3.1.0-1"
+
+
 def test_status_reads_live_auto_update_setting_without_discarding_cached_update(monkeypatch, tmp_path):
     """
     切换提醒设置立即反映到状态，缓存版本仍供手动升级使用。
