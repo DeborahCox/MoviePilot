@@ -262,9 +262,11 @@ jobs:
           notes=$(printf 'Upstream: %s\nBackend source: %s\nFrontend source: %s\n' "$UPSTREAM_TAG" "$backend_sha" "$FRONTEND_SHA")
           gh release create "$TAG" dist.zip --repo "$GITHUB_REPOSITORY" --verify-tag --draft --title "$TAG" --notes "$notes"
           expected="sha256:$(sha256sum dist.zip | awk '{print $1}')"
+          release_id=$(gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq ".[] | select(.draft and .tag_name == \"$TAG\") | .id")
+          test -n "$release_id"
           actual=''
           for attempt in {1..12}; do
-            actual=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.assets[] | select(.name == "dist.zip") | .digest')
+            actual=$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" --jq '.assets[] | select(.name == "dist.zip") | .digest')
             [ "$actual" = "$expected" ] && break
             sleep 5
           done
