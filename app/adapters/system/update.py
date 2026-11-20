@@ -64,14 +64,14 @@ class SystemUpdateManager(metaclass=SingletonClass):
     持久化两类升级状态，并保证同一时刻只有一个后台下载任务。
     """
 
-    _BACKEND_RELEASES_API = "https://api.github.com/repos/jxxghp/MoviePilot/releases"
+    _BACKEND_RELEASES_API = "https://api.github.com/repos/DeborahCox/MoviePilot/releases"
     _FRONTEND_RELEASE_API = (
-        "https://api.github.com/repos/jxxghp/MoviePilot-Frontend/releases/tags/{tag}"
+        "https://api.github.com/repos/DeborahCox/MoviePilot/releases/tags/{tag}"
     )
     _BACKEND_ARCHIVE_URL = (
-        "https://github.com/jxxghp/MoviePilot/archive/refs/tags/{tag}.zip"
+        "https://github.com/DeborahCox/MoviePilot/archive/refs/tags/{tag}.zip"
     )
-    _VERSION_PATTERN = re.compile(r"^v3\.\d+\.\d+(?:[-.](?:alpha|beta|rc)\d*)?$", re.I)
+    _VERSION_PATTERN = re.compile(r"^v3\.\d+\.\d+(?:(?:[-.](?:alpha|beta|rc)\d*)|(?:-\d+))?$", re.I)
     # 镜像构建时写入的系统基线（ISO 日期），记录镜像系统软件包刷新到的安全基线。
     _SYSTEM_BASELINE_FILE = Path("/etc/moviepilot/system-baseline")
     # 基线机制引入前的下限：没有基线文件的旧镜像按此值比较，因此只有目标版本把
@@ -1724,7 +1724,7 @@ class SystemUpdateManager(metaclass=SingletonClass):
 
     def _fetch_frontend_release(self, version: str) -> dict[str, Any]:
         """
-        读取后端版本声明对应的前端 Release。
+        读取包含后端版本声明所需前端资产的 Fork Release。
         """
         response = self._request().get_res(self._FRONTEND_RELEASE_API.format(tag=version))
         if response is None or response.status_code != 200:

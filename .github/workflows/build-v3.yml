@@ -13,6 +13,7 @@ permissions:
 
 jobs:
   release-gate:
+    if: github.repository == 'jxxghp/MoviePilot'
     runs-on: ubuntu-latest
     outputs:
       publish: ${{ steps.detect.outputs.publish }}

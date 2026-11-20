@@ -9,14 +9,18 @@ on:
         description: 'Rebuild image even if the release tag already exists'
         type: boolean
         default: false
+      release_version:
+        description: 'Immutable fork release version (for example v3.2.8-1)'
+        type: string
+        required: false
 
 permissions:
   contents: write
   packages: write
 
 concurrency:
-  group: sync-build
-  cancel-in-progress: true
+  group: sync-build-${{ inputs.release_version != '' && 'release' || 'sync' }}
+  cancel-in-progress: false
 
 env:
   IMAGE: ghcr.io/deborahcox/moviepilot
@@ -62,6 +66,7 @@ jobs:
 
   build:
     needs: sync
+    if: github.event_name != 'workflow_dispatch' || inputs.release_version == ''
     runs-on: ubuntu-latest
     steps:
       - name: Resolve upstream latest release
@@ -189,3 +194,99 @@ jobs:
             MOVIEPILOT_PYTHON_VARIANT=standard
           labels: |
             org.opencontainers.image.description=MoviePilot fork build with connectivity-test patch
+
+  publish-update:
+    if: github.event_name == 'workflow_dispatch' && inputs.release_version != ''
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate release version
+        env:
+          TAG: ${{ inputs.release_version }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v3\.[0-9]+\.[0-9]+-[0-9]+$ ]] || { echo 'Use v3.x.y-N for a fork release' >&2; exit 1; }
+
+      - name: Checkout backend
+        uses: actions/checkout@v4
+        with:
+          ref: v3
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Verify backend version and unused tag
+        env:
+          TAG: ${{ inputs.release_version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 -c 'import os, version; assert version.APP_VERSION == os.environ["TAG"] == version.FRONTEND_VERSION, "version.py must declare the requested release for both components"'
+          git fetch --tags origin
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null &&
+             [ "$(git rev-parse "refs/tags/$TAG^{commit}")" != "$(git rev-parse HEAD)" ]; then
+            echo "Tag $TAG points to a different commit" >&2; exit 1
+          fi
+          response=$(mktemp)
+          status=$(gh api -i "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" > "$response" 2>/dev/null && echo 200 || awk 'NR == 1 {print $2}' "$response")
+          if [ "$status" = 200 ]; then
+            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.draft' | grep -qx true || { echo "Published release $TAG is immutable" >&2; exit 1; }
+          elif [ "$status" != 404 ]; then
+            echo "Unable to inspect release: HTTP $status" >&2; exit 1
+          fi
+
+      - name: Checkout frontend
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.FRONTEND_REPO }}
+          ref: ${{ env.FRONTEND_REF }}
+          path: frontend-src
+          fetch-depth: 1
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+
+      - name: Build frontend release
+        working-directory: frontend-src
+        env:
+          TAG: ${{ inputs.release_version }}
+        run: |
+          set -euo pipefail
+          corepack enable
+          yarn install --frozen-lockfile --network-timeout 600000
+          yarn build
+          test -f dist/index.html
+          printf '%s\n' "$TAG" > dist/version.txt
+          zip -qr "$GITHUB_WORKSPACE/dist.zip" dist
+
+      - name: Publish draft and immutable tag
+        env:
+          TAG: ${{ inputs.release_version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            git tag "$TAG" "$(git rev-parse HEAD)"
+            git push origin "refs/tags/$TAG"
+          fi
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist.zip --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" dist.zip --repo "$GITHUB_REPOSITORY" --verify-tag --draft --title "$TAG" --notes "Fork release $TAG"
+          fi
+
+      - name: Verify release asset and publish
+        env:
+          TAG: ${{ inputs.release_version }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          expected="sha256:$(sha256sum dist.zip | awk '{print $1}')"
+          actual=''
+          for attempt in {1..12}; do
+            actual=$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" --jq '.assets[] | select(.name == "dist.zip") | .digest')
+            [ "$actual" = "$expected" ] && break
+            sleep 5
+          done
+          test "$actual" = "$expected"
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
