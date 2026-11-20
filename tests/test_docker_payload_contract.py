@@ -11,6 +11,7 @@ DOCKERFILE = ROOT / "docker" / "Dockerfile"
 UPDATER = ROOT / "docker" / "update.sh"
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "build-v3.yml"
 BETA_WORKFLOW = ROOT / ".github" / "workflows" / "beta.yml"
+SYNC_WORKFLOW = ROOT / ".github" / "workflows" / "sync-build.yml"
 
 
 def _read(path: Path) -> str:
@@ -18,6 +19,14 @@ def _read(path: Path) -> str:
     读取构建合同文件。
     """
     return path.read_text(encoding="utf-8")
+
+
+def test_fork_frontend_bundle_includes_plugin_icons() -> None:
+    workflow = _read(SYNC_WORKFLOW)
+    assert "MoviePilot-Plugins/archive/refs/heads/main.zip" in workflow
+    assert "public/plugin_icon" in workflow
+    assert "test -f dist/plugin_icon/Chatgpt_A.png" in workflow
+    assert workflow.index("public/plugin_icon") < workflow.index('yarn build')
 
 
 def test_build_context_excludes_runtime_state_and_keeps_release_inputs() -> None:
