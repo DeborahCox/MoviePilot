@@ -51,17 +51,15 @@ class _FakeImdbApi:
 
 
 def _media_info() -> CoreMediaInfo:
-    info = CoreMediaInfo(
+    return CoreMediaInfo(
         media_source=MediaSource.TMDB,
         type=MediaType.MOVIE,
         title="The Odyssey",
         tmdb_id=42,
         imdb_id="tt1234567",
+        budget=250000000,
+        revenue=1804589435,
     )
-    # 投影字段通过 __dict__ 进入 to_dict()，不要求 dataclass 声明
-    info.budget = 250000000
-    info.revenue = 1804589435
-    return info
 
 
 async def _request_detail(monkeypatch: pytest.MonkeyPatch) -> dict:
