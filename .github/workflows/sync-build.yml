@@ -182,8 +182,12 @@ jobs:
           yarn install --frozen-lockfile --network-timeout 600000 2>&1 | grep -v "Workspaces can only be enabled in private projects."
           yarn_rc=${PIPESTATUS[0]}
           [ "${yarn_rc}" -eq 0 ] || { echo "yarn install failed (rc=${yarn_rc})"; exit "${yarn_rc}"; }
+          curl -fsSL --retry 3 "https://github.com/jxxghp/MoviePilot-Plugins/archive/refs/heads/main.zip" -o "$RUNNER_TEMP/plugin-icons.zip"
+          unzip -q "$RUNNER_TEMP/plugin-icons.zip" 'MoviePilot-Plugins-main/icons/*' -d "$RUNNER_TEMP/plugin-icons"
+          cp -a "$RUNNER_TEMP/plugin-icons/MoviePilot-Plugins-main/icons" public/plugin_icon
           MOVIEPILOT_BUILD_VERSION="$RELEASE_TAG" yarn build
           test -f dist/index.html
+          test -f dist/plugin_icon/Chatgpt_A.png
           printf '%s\n' "$RELEASE_TAG" > dist/version.txt
           mkdir -p "$GITHUB_WORKSPACE/frontend-dist"
           cp -a dist/. "$GITHUB_WORKSPACE/frontend-dist/"
