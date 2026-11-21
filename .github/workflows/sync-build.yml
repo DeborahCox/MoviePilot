@@ -259,6 +259,7 @@ jobs:
           push: true
           tags: |
             ${{ env.IMAGE }}:${{ steps.release.outputs.tag }}
+            ${{ env.IMAGE }}:${{ steps.release.outputs.release_tag }}
             ${{ env.IMAGE }}:latest
           cache-from: type=registry,ref=ghcr.io/deborahcox/moviepilot:buildcache
           cache-to: type=registry,ref=ghcr.io/deborahcox/moviepilot:buildcache,mode=max
