@@ -38,23 +38,28 @@ def test_fork_image_uses_release_version_and_pinned_resources() -> None:
     assert 'assert version.APP_VERSION == version.FRONTEND_VERSION == os.environ["RELEASE_TAG"]' in workflow
 
 
-def test_manual_sync_build_auto_increments_fork_release_revision() -> None:
+def test_sync_build_fork_release_revision_policy() -> None:
     """
-    手动触发且未指定版本时，fork 发布尾缀必须按现有最大号 +1，避免复用旧号被发布步骤跳过。
+    手动触发且未指定版本时 fork 尾缀按现有最大号 +1 发新版；定时触发保持最新尾缀只刷新镜像；
+    手动指定版本优先。避免固定 -1 导致发布被跳过，也避免定时空跑堆积 release。
     """
     workflow = _read(SYNC_WORKFLOW)
 
     assert 'EVENT_NAME: ${{ github.event_name }}' in workflow
-    assert '[[ -z "$FINAL_REVISION" && "$EVENT_NAME" == "workflow_dispatch" ]]' in workflow
+    assert 'if [[ -z "$FINAL_REVISION" ]]; then' in workflow
     assert 'gh api "repos/$GITHUB_REPOSITORY/releases" --paginate --jq \'.[].tag_name\'' in workflow
     assert 'grep -E "^${TAG}-[0-9]+$"' in workflow
     assert 'sort -n | tail -1' in workflow
-    assert 'FINAL_REVISION=$(( ${max:-0} + 1 ))' in workflow
-    # 手动指定与定时触发仍回退到确定值：指定优先、否则默认 1。
+    # 手动触发：最大尾缀 +1。
+    assert '[[ "$EVENT_NAME" == "workflow_dispatch" ]]' in workflow
+    assert 'FINAL_REVISION=$(( max + 1 ))' in workflow
+    # 定时触发：保持最大尾缀（else 分支）。
+    assert 'FINAL_REVISION=$max' in workflow
+    # 指定优先、无历史时回落 1、结果校验与写出。
     assert 'FINAL_REVISION="${FINAL_REVISION:-1}"' in workflow
+    assert '[[ "$FINAL_REVISION" =~ ^[1-9][0-9]*$ ]]' in workflow
     assert 'echo "release_tag=${TAG}-${FINAL_REVISION}" >> "$GITHUB_OUTPUT"' in workflow
     assert 'release_tag=${TAG}-${REVISION:-1}' not in workflow
-
 
 def test_build_context_excludes_runtime_state_and_keeps_release_inputs() -> None:
     """
