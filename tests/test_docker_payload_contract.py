@@ -36,6 +36,8 @@ def test_fork_image_uses_release_version_and_pinned_resources() -> None:
     assert 'org.moviepilot.resources-revision=${{ steps.resources.outputs.sha }}' in workflow
     assert workflow.index('name: Stamp image release version') < workflow.index('name: Build and push image')
     assert 'assert version.APP_VERSION == version.FRONTEND_VERSION == os.environ["RELEASE_TAG"]' in workflow
+    # 镜像必须同时打上带 fork 尾缀的版本 tag，使每个 release 有对应的不可变镜像。
+    assert '${{ env.IMAGE }}:${{ steps.release.outputs.release_tag }}' in workflow
 
 
 def test_sync_build_fork_release_revision_policy() -> None:
