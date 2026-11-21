@@ -116,6 +116,7 @@ async def tmdb_movies(
     vote_average: Optional[float] = 0.0,
     vote_count: Optional[int] = 0,
     release_date: Optional[str] = "",
+    release_year: Optional[str] = "",
     page: Optional[int] = 1,
     _: _SchemaTokenPayload = Depends(verify_token),
 ) -> Any:
@@ -132,6 +133,7 @@ async def tmdb_movies(
         vote_average=vote_average or 0.0,
         vote_count=vote_count or 0,
         release_date=release_date or "",
+        release_year=release_year or "",
         page=page,
     )
     return [movie.to_dict() for movie in movies] if movies else []
@@ -147,6 +149,7 @@ async def tmdb_tvs(
     vote_average: Optional[float] = 0.0,
     vote_count: Optional[int] = 0,
     release_date: Optional[str] = "",
+    release_year: Optional[str] = "",
     page: Optional[int] = 1,
     _: _SchemaTokenPayload = Depends(verify_token),
 ) -> Any:
@@ -163,6 +166,7 @@ async def tmdb_tvs(
         vote_average=vote_average or 0.0,
         vote_count=vote_count or 0,
         release_date=release_date or "",
+        release_year=release_year or "",
         page=page,
     )
     return [tv.to_dict() for tv in tvs] if tvs else []

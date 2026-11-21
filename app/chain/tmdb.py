@@ -27,6 +27,7 @@ class TmdbChain(ChainBase):
                       vote_average: float,
                       vote_count: int,
                       release_date: str,
+                      release_year: str = "",
                       page: Optional[int] = 1) -> Optional[List[MediaInfo]]:
         """
 
@@ -41,6 +42,7 @@ class TmdbChain(ChainBase):
         :param vote_average:  评分
         :param vote_count:  评分人数
         :param release_date:  上映日期
+        :param release_year:  上映年份筛选（单年 2024 或年代 2020s）
         :param page:  页码
         :return: 媒体信息列表
         """
@@ -53,6 +55,7 @@ class TmdbChain(ChainBase):
                                vote_average=vote_average,
                                vote_count=vote_count,
                                release_date=release_date,
+                               release_year=release_year,
                                page=page))
 
     def tmdb_trending(self, page: Optional[int] = 1) -> Optional[List[MediaInfo]]:
@@ -190,6 +193,7 @@ class TmdbChain(ChainBase):
                                   vote_average: float,
                                   vote_count: int,
                                   release_date: str,
+                                  release_year: str = "",
                                   page: Optional[int] = 1) -> Optional[List[MediaInfo]]:
         """
         发现TMDB电影、剧集（异步版本）
@@ -205,6 +209,7 @@ class TmdbChain(ChainBase):
         :param vote_average:  评分
         :param vote_count:  评分人数
         :param release_date:  上映日期
+        :param release_year:  上映年份筛选（单年 2024 或年代 2020s）
         :param page:  页码
         :return: 媒体信息列表
         """
@@ -217,6 +222,7 @@ class TmdbChain(ChainBase):
                                            vote_average=vote_average,
                                            vote_count=vote_count,
                                            release_date=release_date,
+                                           release_year=release_year,
                                            page=page))
 
     async def async_tmdb_trending(self, page: Optional[int] = 1) -> Optional[List[MediaInfo]]:

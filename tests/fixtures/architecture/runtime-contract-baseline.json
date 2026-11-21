@@ -4834,7 +4834,7 @@
       "execution": "sync_or_async",
       "family": "tmdb",
       "input_contract": "TmdbDiscoverRequest",
-      "optional_parameters": [],
+      "optional_parameters": ["release_year"],
       "plugin_short_circuit": true,
       "public_to_plugins": true,
       "required_parameters": [
@@ -8052,7 +8052,7 @@
       "execution": "sync_or_async",
       "family": "tmdb",
       "input_contract": "TmdbDiscoverRequest",
-      "optional_parameters": [],
+      "optional_parameters": ["release_year"],
       "plugin_short_circuit": true,
       "public_to_plugins": true,
       "required_parameters": [

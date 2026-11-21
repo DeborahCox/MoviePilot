@@ -971,6 +971,7 @@ _METHOD_CONTRACTS = {
         result_contract="list[MediaInfo]",
         result_shape=ModuleResultShape.LIST,
         aggregation=ModuleResultAggregation.ORDERED_LIST_MERGE,
+        optional_parameters=("release_year",),
         required_parameters=(
             "mtype",
             "sort_by",
