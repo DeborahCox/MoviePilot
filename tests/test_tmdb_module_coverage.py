@@ -10,7 +10,7 @@ import pytest
 
 from app.domain.context import MediaInfo
 from app.domain.meta.metabase import MetaBase
-from app.modules.themoviedb import TheMovieDbModule
+from app.modules.themoviedb import TheMovieDbModule, _release_year_params
 from app.modules.themoviedb.tmdbv3api.exceptions import TMDbConnectionError
 from app.schemas.category import ClassificationEnrichmentRequest
 from app.schemas.types import MediaSource, MediaType
@@ -157,3 +157,83 @@ def test_module_match_and_image_sync_async_boundaries() -> None:
     module.tmdb.async_get_info = AsyncMock(return_value=None)
     assert asyncio.run(module.async_tmdb_info(1, MediaType.MOVIE)) is None
     assert TheMovieDbModule._pick_best_tmdb_image(None) is None
+
+
+@pytest.mark.parametrize(
+    ("release_year", "mtype", "expected"),
+    [
+        ("", MediaType.MOVIE, {}),
+        ("", MediaType.TV, {}),
+        (None, MediaType.MOVIE, {}),
+        ("2024", MediaType.MOVIE, {"primary_release_year": 2024}),
+        ("2024", MediaType.TV, {"first_air_date_year": 2024}),
+        (
+            "2020s",
+            MediaType.MOVIE,
+            {
+                "primary_release_date.gte": "2020-01-01",
+                "primary_release_date.lte": "2029-12-31",
+            },
+        ),
+        (
+            "2020s",
+            MediaType.TV,
+            {
+                "first_air_date.gte": "2020-01-01",
+                "first_air_date.lte": "2029-12-31",
+            },
+        ),
+        (
+            "1990s",
+            MediaType.MOVIE,
+            {
+                "primary_release_date.gte": "1990-01-01",
+                "primary_release_date.lte": "1999-12-31",
+            },
+        ),
+        ("abc", MediaType.MOVIE, {}),
+        ("20", MediaType.TV, {}),
+        ("20201", MediaType.MOVIE, {}),
+        ("2025s", MediaType.TV, {}),
+    ],
+)
+def test_release_year_params_maps_year_codes_and_ignores_dirty_values(
+    release_year: Optional[str], mtype: MediaType, expected: dict
+) -> None:
+    """
+    年份 code 应精确映射为电影与剧集的 TMDB discover 原生参数，脏值直接忽略。
+    """
+    assert _release_year_params(release_year, mtype) == expected
+
+
+def test_discover_sync_async_merge_release_year_params() -> None:
+    """
+    同步与异步发现入口应把映射后的年份参数合并进各自的 TMDB discover 请求。
+    """
+    module = _module()
+    module.tmdb.discover_movies.return_value = []
+    module.tmdb.async_discover_movies = AsyncMock(return_value=[])
+    request = {
+        "mtype": MediaType.MOVIE,
+        "sort_by": "popularity.desc",
+        "with_genres": "",
+        "with_original_language": "",
+        "with_keywords": "",
+        "with_watch_providers": "",
+        "vote_average": 0.0,
+        "vote_count": 0,
+        "release_date": "",
+        "release_year": "2020s",
+    }
+
+    assert module.tmdb_discover(**request) == []
+    assert asyncio.run(module.async_tmdb_discover(**request)) == []
+
+    sync_params = module.tmdb.discover_movies.call_args.args[0]
+    async_params = module.tmdb.async_discover_movies.call_args.args[0]
+    expected = {
+        "primary_release_date.gte": "2020-01-01",
+        "primary_release_date.lte": "2029-12-31",
+    }
+    assert sync_params == async_params
+    assert {key: sync_params[key] for key in expected} == expected

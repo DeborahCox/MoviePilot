@@ -10,6 +10,7 @@ from app.runtime.extensions.module.contracts import (
     ModuleExecutionMode,
     ModuleResultAggregation,
     ModuleResultShape,
+    compatible_module_kwargs,
     diagnose_module_callable,
     diagnose_module_result,
     get_module_method_contract,
@@ -664,3 +665,36 @@ def test_unknown_plugin_result_keeps_unchecked_legacy_compatibility() -> None:
     未知第三方方法的任意返回值继续不做结果形状诊断。
     """
     assert diagnose_module_result("third_party_custom_method", object()) == ()
+
+
+def test_tmdb_discover_release_year_is_dropped_for_legacy_providers() -> None:
+    """
+    新增的 release_year 只应透传给声明该参数的 provider，旧插件不被未知 kwarg 击穿。
+    """
+
+    def legacy_provider(mtype, release_date, page):
+        """
+        模拟升级前未接受 release_year 的第三方 provider。
+        """
+        return []
+
+    def current_provider(mtype, release_date, release_year, page):
+        """
+        模拟已支持 release_year 的 provider。
+        """
+        return []
+
+    kwargs = {
+        "mtype": "MOVIE",
+        "release_date": "",
+        "release_year": "2020s",
+        "page": 1,
+    }
+
+    legacy_kwargs = compatible_module_kwargs("tmdb_discover", legacy_provider, kwargs)
+    assert "release_year" not in legacy_kwargs
+    assert legacy_kwargs == {"mtype": "MOVIE", "release_date": "", "page": 1}
+
+    current_kwargs = compatible_module_kwargs("tmdb_discover", current_provider, kwargs)
+    assert current_kwargs == kwargs
+    assert current_kwargs["release_year"] == "2020s"

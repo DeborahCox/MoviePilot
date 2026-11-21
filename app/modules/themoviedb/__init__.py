@@ -45,8 +45,41 @@ from app.schemas.types import (
 )
 
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_RELEASE_YEAR_RE = re.compile(r"^\d{4}$")
+_RELEASE_DECADE_RE = re.compile(r"^\d{3}0s$")
 _TmdbData = Dict[str, Any]
 _TmdbDataList = List[_TmdbData]
+
+
+def _release_year_params(release_year: str, mtype: MediaType) -> dict:
+    """
+    将前端年份 code 映射为 TMDB discover 原生筛选参数。
+
+    单年使用精确年份参数，年代使用闭区间日期；空串、None 或非法格式表示不筛选。
+
+    :param release_year: 单年（2024）或年代（2020s）code，空串表示不筛选
+    :param mtype: 电影或剧集类型
+    :return: 可直接合并进 discover params 的字典
+    """
+    if not release_year:
+        return {}
+
+    if _RELEASE_YEAR_RE.match(release_year):
+        year = int(release_year)
+        if mtype == MediaType.MOVIE:
+            return {"primary_release_year": year}
+        if mtype == MediaType.TV:
+            return {"first_air_date_year": year}
+        return {}
+
+    if _RELEASE_DECADE_RE.match(release_year):
+        start = int(release_year[:4])
+        gte, lte = f"{start}-01-01", f"{start + 9}-12-31"
+        if mtype == MediaType.MOVIE:
+            return {"primary_release_date.gte": gte, "primary_release_date.lte": lte}
+        if mtype == MediaType.TV:
+            return {"first_air_date.gte": gte, "first_air_date.lte": lte}
+    return {}
 
 
 @dataclass(frozen=True)
@@ -1468,6 +1501,7 @@ class TheMovieDbModule(MediaAuxiliaryProviderMixin, _ModuleBase):
         vote_average: float,
         vote_count: int,
         release_date: str,
+        release_year: str = "",
         page: Optional[int] = 1,
     ) -> Optional[List[MediaInfo]]:
         """
@@ -1482,9 +1516,11 @@ class TheMovieDbModule(MediaAuxiliaryProviderMixin, _ModuleBase):
         :param vote_average: 最低平均评分，包含此边界
         :param vote_count: 最低评分人数，包含此边界
         :param release_date: 最早上映或整剧首播日期，格式 YYYY-MM-DD，包含边界
+        :param release_year: 年份筛选 code，单年如 2024、年代如 2020s，空串表示不筛选
         :param page: 请求页码，从 1 开始
         :return: 当前请求的结果列表；无结果或查询失败时为空列表
         """
+        year_params = _release_year_params(release_year, mtype)
         if mtype == MediaType.MOVIE:
             infos = self.tmdb.discover_movies(
                 {
@@ -1497,6 +1533,7 @@ class TheMovieDbModule(MediaAuxiliaryProviderMixin, _ModuleBase):
                     "vote_count.gte": vote_count,
                     "release_date.gte": release_date,
                     "page": page,
+                    **year_params,
                 }
             )
         elif mtype == MediaType.TV:
@@ -1511,6 +1548,7 @@ class TheMovieDbModule(MediaAuxiliaryProviderMixin, _ModuleBase):
                     "vote_count.gte": vote_count,
                     "first_air_date.gte": release_date,
                     "page": page,
+                    **year_params,
                 }
             )
         else:
@@ -1919,6 +1957,7 @@ class TheMovieDbModule(MediaAuxiliaryProviderMixin, _ModuleBase):
         vote_average: float,
         vote_count: int,
         release_date: str,
+        release_year: str = "",
         page: Optional[int] = 1,
         raise_exception: bool = False,
     ) -> Optional[List[MediaInfo]]:
@@ -1934,11 +1973,13 @@ class TheMovieDbModule(MediaAuxiliaryProviderMixin, _ModuleBase):
         :param vote_average: 最低平均评分，包含此边界
         :param vote_count: 最低评分人数，包含此边界
         :param release_date: 最早上映或整剧首播日期，格式 YYYY-MM-DD，包含边界
+        :param release_year: 年份筛选 code，单年如 2024、年代如 2020s，空串表示不筛选
         :param page: 请求页码，从 1 开始
         :param raise_exception: True 时重新抛出查询异常，False 时记录日志并返回空列表
         :return: 当前请求的结果列表；无结果或查询失败时为空列表
         :raises Exception: 开启异常传播且底层查询失败
         """
+        year_params = _release_year_params(release_year, mtype)
         if mtype == MediaType.MOVIE:
             infos = await self.tmdb.async_discover_movies(
                 {
@@ -1951,6 +1992,7 @@ class TheMovieDbModule(MediaAuxiliaryProviderMixin, _ModuleBase):
                     "vote_count.gte": vote_count,
                     "release_date.gte": release_date,
                     "page": page,
+                    **year_params,
                 },
                 raise_exception=raise_exception,
             )
@@ -1966,6 +2008,7 @@ class TheMovieDbModule(MediaAuxiliaryProviderMixin, _ModuleBase):
                     "vote_count.gte": vote_count,
                     "first_air_date.gte": release_date,
                     "page": page,
+                    **year_params,
                 },
                 raise_exception=raise_exception,
             )
