@@ -1,0 +1,121 @@
+name: Baseline Diff Tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      BASE_SHA:
+        description: 'Baseline commit for comparison (default: HEAD^)'
+        required: false
+        default: ''
+  pull_request:
+    branches:
+      - v3
+
+permissions:
+  contents: read
+
+concurrency:
+  group: baseline-diff-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  baseline-diff:
+    name: Compare failures against baseline
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    continue-on-error: true
+
+    steps:
+      - name: Checkout head
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Resolve baseline SHA
+        id: base
+        shell: bash
+        env:
+          INPUT_BASE_SHA: ${{ github.event.inputs.BASE_SHA }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -n "$INPUT_BASE_SHA" ]; then
+            echo "sha=$INPUT_BASE_SHA" >> "$GITHUB_OUTPUT"
+          elif [ -n "$PR_BASE_SHA" ]; then
+            echo "sha=$PR_BASE_SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "sha=$(git rev-parse HEAD^)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create baseline worktree
+        shell: bash
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+        run: |
+          git worktree add --detach baseline "$BASE_SHA"
+          cp pyproject.toml uv.lock baseline/
+          mkdir -p reports baseline/reports
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.0.1
+        with:
+          python-version: '3.14'
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Install dependencies (head)
+        run: uv sync --locked
+
+      - name: Install dependencies (baseline)
+        working-directory: baseline
+        run: uv sync --locked
+
+      - name: Validate comparator
+        run: python -m unittest discover -s .github/scripts -p 'test_baseline_diff.py' -v
+
+      - name: Run full test suite on head and baseline
+        shell: bash
+        run: |
+          set +e
+          uv run --locked --no-sync python tests/run.py --serial -q --junitxml=reports/head.xml --tb=no
+          echo $? > reports/head.exit
+          (
+            cd baseline
+            uv run --locked --no-sync python tests/run.py --serial -q --junitxml=reports/baseline.xml --tb=no
+          )
+          echo $? > reports/baseline.exit
+          set -e
+
+      - name: Compare failures
+        shell: bash
+        env:
+          BASE_SHA: ${{ steps.base.outputs.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python .github/scripts/baseline_diff.py \
+            --base-report baseline/reports/baseline.xml \
+            --head-report reports/head.xml \
+            --base-exit "$(cat reports/baseline.exit)" \
+            --head-exit "$(cat reports/head.exit)" \
+            --base-sha "$BASE_SHA" \
+            --head-sha "$HEAD_SHA" \
+            --markdown-output baseline-diff.md \
+            --json-output baseline-diff.json
+          cat baseline-diff.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload baseline diff artifacts
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: baseline-diff-reports
+          path: |
+            baseline-diff.md
+            baseline-diff.json
+            reports/head.xml
+            baseline/reports/baseline.xml
+            reports/head.exit
+            reports/baseline.exit
+          if-no-files-found: warn
+          retention-days: 7
