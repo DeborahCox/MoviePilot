@@ -1934,6 +1934,7 @@ class MediaInfo:
     :param backdrop_path: 背景图片
     :param poster_path: 海报图片
     :param logo_path: 媒体标志图片地址
+    :param logo_language: 媒体标志语言代码（如 zh-CN、zh、en）
     :param vote_average: 评分
     :param imdbRating: IMDb 聚合评分（十分制）
     :param budget: 电影成本（USD）
@@ -2012,6 +2013,7 @@ class MediaInfo:
     backdrop_path: Optional[str] = None
     poster_path: Optional[str] = None
     logo_path: Optional[str] = None
+    logo_language: Optional[str] = None
     vote_average: Optional[float] = None
     imdbRating: Optional[float] = None
     budget: Optional[int] = None
