@@ -34,6 +34,16 @@ class ReadReportTests(unittest.TestCase):
             {"tests.test_alpha::test_fail", "tests.test_beta::test_error"},
         )
 
+    def test_marks_run_with_no_testcases_but_suite_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "broken.xml"
+            path.write_text(
+                '<testsuite name="pytest" errors="12" tests="0"><error message="collect failed"/></testsuite>',
+                encoding="utf-8",
+            )
+            report = read_report(path, 1)
+        self.assertEqual(report.failures, {"__suite_load_error__:12"})
+
     def test_missing_report_uses_exit_code_marker(self) -> None:
         report = read_report(Path("/nonexistent/report.xml"), 2)
         self.assertTrue(report.missing)

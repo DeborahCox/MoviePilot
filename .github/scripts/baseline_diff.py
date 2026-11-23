@@ -31,11 +31,21 @@ def read_report(path: Path, exit_code: int | None = None) -> Report:
         return Report(failures={f"__invalid_report__:{detail}"}, missing=True, exit_code=exit_code)
 
     failures: set[str] = set()
+    testcases = 0
     for case in root.iter("testcase"):
+        testcases += 1
         if case.find("failure") is not None or case.find("error") is not None:
             classname = case.get("classname", "")
             name = case.get("name", "")
             failures.add(f"{classname}::{name}")
+    if testcases == 0:
+        suite_errors = sum(
+            int(suite.get("errors", "0"))
+            for suite in root.iter("testsuite")
+            if str(suite.get("errors", "0")).isdigit()
+        )
+        if suite_errors:
+            failures.add(f"__suite_load_error__:{suite_errors}")
     return Report(failures=failures, missing=False, exit_code=exit_code)
 
 
