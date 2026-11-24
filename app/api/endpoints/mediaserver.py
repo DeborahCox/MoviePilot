@@ -45,6 +45,7 @@ from app.application.mediaserver import (
     MediaServerQueryService,
     get_mediaserver_configs,
 )
+from app.application.security.acl import filter_allowed_configs, is_instance_allowed
 from app.application.storage import StorageHelper
 from app.chain.download import DownloadChain
 from app.chain.mediaserver import MediaServerChain
@@ -81,17 +82,65 @@ from app.schemas.types import MediaSource, MediaType, SystemConfigKey
 router = ResponseAPIRouter()
 
 
-def _configured_stream_hosts(path: Optional[Path], *, include_media_servers: bool = False) -> set[str]:
+def _user_acl(userinfo: Any) -> tuple[Any, bool]:
+    """
+    从令牌载荷中提取 ACL 判断所需的用户名与超级用户标记。
+
+    令牌载荷为可选字段，缺省值按普通用户处理。
+    """
+    return getattr(userinfo, "username", None), bool(getattr(userinfo, "super_user", False))
+
+
+def _require_mediaserver_access(server: Optional[str], userinfo: Any) -> None:
+    """
+    校验显式指定的媒体服务器实例是否对当前用户可见。
+
+    只对配置中确实存在的实例生效：未配置的实例名交由下游按既有逻辑处理，
+    不改变原有错误语义；已配置但当前用户无权访问的实例统一返回 404，不泄露
+    实例存在性。省略实例名时不在此处拦截，由调用方遍历时按可见名单过滤。
+
+    :param server: 请求指定的媒体服务器配置名
+    :param userinfo: 已验证的访问令牌载荷
+    :raises HTTPException: 指定实例存在但当前用户无权访问时
+    """
+    if not server:
+        return
+    username, is_superuser = _user_acl(userinfo)
+    configs = get_mediaserver_configs()
+    target = next((config for config in configs if getattr(config, "name", None) == server), None)
+    if target is None:
+        return
+    if not is_instance_allowed(target, username=username, is_superuser=is_superuser):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到媒体服务器条目")
+
+
+def _configured_stream_hosts(
+    path: Optional[Path],
+    *,
+    include_media_servers: bool = False,
+    username: Any = None,
+    is_superuser: bool = False,
+) -> set[str]:
     """
     从应用层配置读取允许 STRM 使用的媒体服务器和云存储主机。
 
+    媒体服务器白名单按当前用户可见实例生成，避免受限实例通过流代理端点
+    间接访问。未传用户信息时仅保留对所有人开放的实例，保持拒绝优先。
+
     :param path: 可选的本机文件或 STRM 文件路径
     :param include_media_servers: 是否允许代理已配置媒体服务器的原始流地址
-    :return: 管理员明确配置的主机名集合
+    :param username: 当前用户名
+    :param is_superuser: 当前用户是否为超级用户
+    :return: 当前用户可见且由管理员明确配置的主机名集合
     """
     if not include_media_servers and (not path or path.suffix.casefold() != ".strm"):
         return set()
-    return _configured_media_stream_hosts(get_mediaserver_configs(), StorageHelper.get_storagies())
+    configs = filter_allowed_configs(
+        get_mediaserver_configs(),
+        username=username,
+        is_superuser=is_superuser,
+    )
+    return _configured_media_stream_hosts(configs, StorageHelper.get_storagies())
 
 
 def _find_stream_item(
@@ -186,6 +235,9 @@ def _playback_source(
     item: _SchemaMediaServerItem,
     path: Optional[Path],
     media_source_id: Optional[str] = None,
+    *,
+    username: Any = None,
+    is_superuser: bool = False,
 ) -> tuple[str, Path | str, set[str]]:
     """
     优先选择媒体服务器原始流，适配器不支持时才解析本地文件或 STRM。
@@ -197,6 +249,8 @@ def _playback_source(
     :param item: 已授权的媒体服务器条目
     :param path: 可选的本机媒体文件路径
     :param media_source_id: 可选指定多版本媒体源标识
+    :param username: 当前用户名，用于过滤媒体服务器主机白名单
+    :param is_superuser: 当前用户是否为超级用户
     :return: 流来源类型、文件路径或上游 URL，以及允许的已配置主机名
     :raises HTTPException: 媒体服务器不支持原始流且本地文件不可读取时
     """
@@ -208,11 +262,13 @@ def _playback_source(
             else chain.get_stream_url(server, itemid, item.item_type)
         )
         if upstream:
-            hosts = _configured_stream_hosts(path, include_media_servers=True)
+            hosts = _configured_stream_hosts(
+                path, include_media_servers=True, username=username, is_superuser=is_superuser
+            )
             return "server", _validate_stream_url(upstream, configured_hosts=hosts), hosts
     if not path:
         raise HTTPException(status_code=status.HTTP_501_NOT_IMPLEMENTED, detail="媒体服务器不支持文件流且本地文件不可读取")
-    hosts = _configured_stream_hosts(path)
+    hosts = _configured_stream_hosts(path, username=username, is_superuser=is_superuser)
     source_type, source = _stream_source(path, hosts)
     return source_type, source, hosts
 
@@ -352,7 +408,7 @@ def search_library(
     limit: int = Query(default=30, ge=1, le=50),
     server: Optional[str] = None,
     library_id: Optional[str] = None,
-    _: _SchemaTokenPayload = Depends(verify_token),
+    userinfo: _SchemaTokenPayload = Depends(verify_token),
 ) -> _SchemaResponse[List[_SchemaMediaServerPlayItem]]:
     """
     使用已配置媒体服务器自身的搜索接口查找电影、电视剧和音乐单曲。
@@ -362,9 +418,10 @@ def search_library(
     :param limit: 最多返回的结果数
     :param server: 可选媒体服务器配置名，限定单一服务器搜索
     :param library_id: 可选媒体库标识，限定单一媒体库内搜索
-    :param _: 已验证的访问令牌
+    :param userinfo: 已验证的访问令牌
     :return: 带海报、服务器来源和本地播放标识的媒体列表
     """
+    _require_mediaserver_access(server, userinfo)
     allowed_types = {MediaType.MOVIE.value, MediaType.TV.value, MediaType.MUSIC.value}
     default_types = [MediaType.MOVIE.value, MediaType.TV.value, MediaType.MUSIC.value]
     selected_types = list(
@@ -403,8 +460,15 @@ def stream_info(
     :param userinfo: 已验证的访问令牌
     :return: 可供原生播放器读取的媒体流清单
     """
+    _require_mediaserver_access(server, userinfo)
     server_name, item, path = _resolve_stream_item(itemid, userinfo.sub, server=server)
-    _playback_source(server_name, itemid, item, path, media_source_id=media_source_id)
+    _require_mediaserver_access(server_name, userinfo)
+    username, is_superuser = _user_acl(userinfo)
+    _playback_source(
+        server_name, itemid, item, path,
+        media_source_id=media_source_id,
+        username=username, is_superuser=is_superuser,
+    )
     stream_query = {"itemid": itemid}
     if server_name:
         stream_query["server"] = server_name
@@ -457,19 +521,21 @@ def stream_info(
 def music_stream_info(
     music: _SchemaMediaServerMusicStreamRequest,
     request: Request,
-    _: _SchemaTokenPayload = Depends(verify_token),
+    userinfo: _SchemaTokenPayload = Depends(verify_token),
 ) -> _SchemaResponse[_SchemaMediaServerStreamInfo]:
     """
     将音乐元数据源的曲目身份匹配到媒体服务器中的单曲并返回流与 LRC 歌词。
 
     :param music: 详情页选中的单曲元数据，不接受专辑或艺术家 ID
     :param request: 当前请求，用于生成当前实例流地址
-    :param _: 已验证的访问令牌
+    :param userinfo: 已验证的访问令牌
     :return: 实际媒体服务器单曲的音频流和可选同名歌词清单
     """
     server, item, path = _find_music_stream_item(music)
+    _require_mediaserver_access(server, userinfo)
     itemid = str(item.item_id or item.id or "")
-    _playback_source(server, itemid, item, path)
+    username, is_superuser = _user_acl(userinfo)
+    _playback_source(server, itemid, item, path, username=username, is_superuser=is_superuser)
     content_url = request.url_for("stream_item_content").include_query_params(itemid=itemid, server=server)
     return _SchemaResponse(
         success=True,
@@ -514,9 +580,14 @@ def stream_item_content(
     :param userinfo: 已验证的访问令牌
     :return: 本地文件或受控 STRM 上游流式响应
     """
+    _require_mediaserver_access(server, userinfo)
     server_name, item, path = _resolve_stream_item(itemid, userinfo.sub, server=server)
+    _require_mediaserver_access(server_name, userinfo)
+    username, is_superuser = _user_acl(userinfo)
     source_type, source, configured_hosts = _playback_source(
-        server_name, itemid, item, path, media_source_id=media_source_id
+        server_name, itemid, item, path,
+        media_source_id=media_source_id,
+        username=username, is_superuser=is_superuser,
     )
     range_header = request.headers.get("range")
     if source_type == "server":
@@ -525,7 +596,9 @@ def stream_item_content(
         except HTTPException as error:
             if not path or error.status_code not in {status.HTTP_404_NOT_FOUND, status.HTTP_501_NOT_IMPLEMENTED}:
                 raise
-            configured_hosts = _configured_stream_hosts(path)
+            configured_hosts = _configured_stream_hosts(
+                path, username=username, is_superuser=is_superuser
+            )
             source_type, source = _stream_source(path, configured_hosts)
     if source_type == "file":
         return _file_stream_response(Path(source), range_header)
@@ -561,14 +634,19 @@ def stream_item_subtitle(
     :return: 字幕文件流式响应
     :raises HTTPException: 字幕不存在或不属于当前影片时返回 404
     """
+    _require_mediaserver_access(server, userinfo)
     server_name, item, video_path = _resolve_stream_item(itemid, userinfo.sub, server=server)
+    _require_mediaserver_access(server_name, userinfo)
     if subtitle_id.startswith("ms:") and server_name:
         upstream = MediaServerChain().get_subtitle_url(
             server=server_name, item_id=item.item_id or itemid, subtitle_id=subtitle_id
         )
         if not upstream:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到媒体服务器字幕")
-        hosts = _configured_stream_hosts(video_path, include_media_servers=True)
+        username, is_superuser = _user_acl(userinfo)
+        hosts = _configured_stream_hosts(
+            video_path, include_media_servers=True, username=username, is_superuser=is_superuser
+        )
         validated = _validate_stream_url(upstream, configured_hosts=hosts)
         return _remote_stream_response(validated, request.headers.get("range"), hosts)
     if not video_path:
@@ -600,7 +678,9 @@ def stream_item_lyrics(
     :return: UTF-8 文本歌词的流式响应
     :raises HTTPException: 歌词不存在或条目不是音频时返回 404
     """
-    _, item, audio_path = _resolve_stream_item(itemid, userinfo.sub, server=server)
+    _require_mediaserver_access(server, userinfo)
+    server_name, item, audio_path = _resolve_stream_item(itemid, userinfo.sub, server=server)
+    _require_mediaserver_access(server_name, userinfo)
     if not audio_path or not _is_audio_item(item, audio_path):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到音乐歌词")
     lyrics_path = _find_lyrics_path(audio_path)
@@ -616,7 +696,7 @@ def stream_item_lyrics(
 )
 def episode_ids(
     itemid: str,
-    _: _SchemaTokenPayload = Depends(verify_token),
+    userinfo: _SchemaTokenPayload = Depends(verify_token),
     server: Optional[str] = None,
 ) -> _SchemaResponse[dict[int, dict[int, str]]]:
     """
@@ -624,9 +704,10 @@ def episode_ids(
 
     :param itemid: 媒体服务器中的电视剧系列条目标识
     :param server: 可选媒体服务器配置名，精确绑定搜索结果来源
-    :param _: 已验证的访问令牌
+    :param userinfo: 已验证的访问令牌
     :return: 季号到集号及其可播放条目标识的映射
     """
+    _require_mediaserver_access(server, userinfo)
     find_options = {"server": server} if server else {}
     result = MediaServerChain().find_item(
         itemid, **find_options, query=MediaServerQueryOptions(fields=frozenset())
@@ -635,6 +716,7 @@ def episode_ids(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到已入库电视剧")
     chain = MediaServerChain()
     server, item = result
+    _require_mediaserver_access(server, userinfo)
     item_id = item.item_id or itemid
     seasons = chain.episodes(server=server, item_id=item_id, query=MediaServerQueryOptions(fields=frozenset()))
     if seasons is None:
@@ -665,7 +747,7 @@ def episode_metadata(
     itemid: str,
     season: int = Query(ge=0),
     server: Optional[str] = None,
-    _: _SchemaTokenPayload = Depends(verify_token),
+    userinfo: _SchemaTokenPayload = Depends(verify_token),
     page: CompatiblePageParam = None,
     count: CompatibleCountParam = None,
 ) -> _SchemaResponse[list[_SchemaTmdbEpisode]]:
@@ -675,12 +757,13 @@ def episode_metadata(
     :param itemid: 媒体服务器中的系列条目标识
     :param season: 媒体服务器的原生季号，0 表示特别篇
     :param server: 搜索结果提供的媒体服务器配置名称
-    :param _: 已验证的访问令牌
+    :param userinfo: 已验证的访问令牌
     :param page: 兼容分页参数，省略时返回该季全部展示信息
     :param count: 兼容分页大小，由统一响应路由处理显式分页窗口
     :return: 该季的可选展示信息；缺少明确 TMDB 身份时为空，不改变可播放集映射
     :raises HTTPException: 系列条目不存在时返回 404
     """
+    _require_mediaserver_access(server, userinfo)
     find_options = {"server": server} if server else {}
     result = MediaServerChain().find_item(
         itemid, **find_options,
@@ -689,6 +772,7 @@ def episode_metadata(
     if not result:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到已入库电视剧")
     item = result[1]
+    _require_mediaserver_access(result[0], userinfo)
     source, media_id = resolve_media_identity(media=item)
     if source != MediaSource.TMDB or not media_id or not media_id.isdigit():
         return _SchemaResponse(success=True, data=[])
@@ -704,7 +788,7 @@ def episode_metadata(
 def season_episode_ids(
     itemid: str,
     season: int,
-    _: _SchemaTokenPayload = Depends(verify_token),
+    userinfo: _SchemaTokenPayload = Depends(verify_token),
     server: Optional[str] = None,
 ) -> _SchemaResponse[dict[int, str]]:
     """
@@ -713,9 +797,10 @@ def season_episode_ids(
     :param itemid: 媒体服务器中的电视剧系列条目标识
     :param season: 季号，特别篇使用 0
     :param server: 可选媒体服务器配置名，精确绑定搜索结果来源
-    :param _: 已验证的访问令牌
+    :param userinfo: 已验证的访问令牌
     :return: 集数到已入库单集条目标识的映射
     """
+    _require_mediaserver_access(server, userinfo)
     find_options = {"server": server} if server else {}
     result = MediaServerChain().find_item(
         itemid, **find_options, query=MediaServerQueryOptions(fields=frozenset())
@@ -723,6 +808,7 @@ def season_episode_ids(
     if not result:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到已入库电视剧")
     server, item = result
+    _require_mediaserver_access(server, userinfo)
     episodes = MediaServerChain().get_season_episode_ids(server=server, item_id=item.item_id or itemid, season=season)
     return _SchemaResponse(success=True, data=episodes or {})
 
@@ -753,16 +839,18 @@ def _require_mediaserver_result(result: Optional[List[Any]]) -> List[Any]:
     response_model=_SchemaResponse[_SchemaMediaServerPlayData],
 )
 def play_item(
-    itemid: str, _: _SchemaTokenPayload = Depends(verify_token)
+    itemid: str, userinfo: _SchemaTokenPayload = Depends(verify_token)
 ) -> _SchemaResponse[dict[str, Any]]:
     """
-    获取媒体服务器播放页面地址
+    获取媒体服务器播放页面地址，仅遍历当前用户可见的已配置实例。
     """
     if not itemid:
         return _SchemaResponse(success=False, message="参数错误")
     configs = get_mediaserver_configs()
     if not configs:
         return _SchemaResponse(success=False, message="未配置媒体服务器")
+    username, is_superuser = _user_acl(userinfo)
+    configs = filter_allowed_configs(configs, username=username, is_superuser=is_superuser)
     media_chain = MediaServerChain()
     for config in configs:
         name = config.name
@@ -908,6 +996,7 @@ def latest(
     """
     获取媒体服务器最新入库条目；传入 `page` 时按 `count` 分页切片返回，支持客户端无限滚动加载。
     """
+    _require_mediaserver_access(server, userinfo)
     if page is None or page < 1:
         return _require_mediaserver_result(
             MediaServerChain().latest(
@@ -943,6 +1032,7 @@ def playing(
     """
     获取媒体服务器正在播放条目
     """
+    _require_mediaserver_access(server, userinfo)
     return _require_mediaserver_result(
         MediaServerChain().playing(
             server=server,
@@ -964,6 +1054,7 @@ def library(
     """
     获取媒体服务器媒体库列表
     """
+    _require_mediaserver_access(server, userinfo)
     return _require_mediaserver_result(
         MediaServerChain().librarys(
             server=server,
@@ -1012,6 +1103,7 @@ def browse_library(
     :param userinfo: 已验证的访问令牌
     :return: 分页浏览结果
     """
+    _require_mediaserver_access(server, userinfo)
     page = MediaServerChain().browse_items(
         server=server,
         library_id=library_id,
@@ -1050,6 +1142,7 @@ def library_filters(
     :param userinfo: 已验证的访问令牌
     :return: 可用筛选项模型
     """
+    _require_mediaserver_access(server, userinfo)
     options = MediaServerChain().filter_options(
         server=server, library_id=library_id, username=userinfo.username
     )
@@ -1082,7 +1175,18 @@ def item_detail(
     :raises HTTPException: 未找到条目时返回 404
     """
     chain = MediaServerChain()
-    servers = [server] if server else [c.name for c in get_mediaserver_configs() if c.name]
+    if server:
+        _require_mediaserver_access(server, userinfo)
+        servers = [server]
+    else:
+        username, is_superuser = _user_acl(userinfo)
+        servers = [
+            config.name
+            for config in filter_allowed_configs(
+                get_mediaserver_configs(), username=username, is_superuser=is_superuser
+            )
+            if config.name
+        ]
     for server_name in servers:
         if not server_name:
             continue
@@ -1115,6 +1219,7 @@ def item_seasons(
     :return: 季卡片列表
     """
     _ = page, count
+    _require_mediaserver_access(server, userinfo)
     seasons = MediaServerChain().seasons(
         server=server, item_id=itemid, username=userinfo.username
     )
@@ -1150,6 +1255,7 @@ def item_season_episodes(
     :return: 单集卡片列表
     """
     _ = page, count
+    _require_mediaserver_access(server, userinfo)
     episodes = MediaServerChain().season_episodes(
         server=server,
         item_id=itemid,
@@ -1178,6 +1284,7 @@ def report_progress(
     :param userinfo: 已验证的访问令牌
     :return: 回传是否成功的响应包装
     """
+    _require_mediaserver_access(payload.server, userinfo)
     reported = MediaServerChain().report_progress(
         server=payload.server,
         item_id=payload.item_id,
@@ -1215,8 +1322,11 @@ async def clients(
         for d in mediaservers:
             if not d.get("enabled"):
                 continue
-            allowed = d.get("allowed_users") or []
-            if not allowed or current_user.is_superuser or current_user.name in allowed:
+            if is_instance_allowed(
+                d,
+                username=current_user.name,
+                is_superuser=current_user.is_superuser,
+            ):
                 visible.append({"name": d.get("name"), "type": d.get("type")})
         return visible
     return []

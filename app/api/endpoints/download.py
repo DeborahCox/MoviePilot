@@ -28,6 +28,7 @@ from app.application.configuration import (
 from app.application.directory import DirectoryHelper
 from app.application.download.organization import organize_existing_source
 from app.application.download.tasks import DownloadTaskMutationService
+from app.application.security.acl import filter_allowed_configs, is_instance_allowed
 from app.application.security.url import SecurityUtils
 from app.application.site.query import (
     SiteQueryService,
@@ -398,8 +399,27 @@ def _resolve_add_media(
 def current(name: Optional[str] = None, _: ApiPrincipal = Depends(get_current_download_viewer), page: CompatiblePageParam = None, count: CompatibleCountParam = None) -> Any:
     """
     管理员及下载管理权限用户查询全局下载任务，其余已授权用户仅查询自己发起的任务。
+
+    下载器实例按 ``allowed_users`` 过滤：显式指定无权实例时返回空列表，
+    省略实例名时仅返回来自可见实例的任务，避免按名探测受限下载器。
     """
+    downloaders = get_configured_system_config().get(SystemConfigKey.Downloaders)
+    visible_names = None
+    if downloaders:
+        visible_names = {
+            config.get("name")
+            for config in filter_allowed_configs(
+                downloaders,
+                username=getattr(_, "name", None),
+                is_superuser=bool(getattr(_, "is_superuser", False)),
+            )
+            if config.get("enabled")
+        }
+        if name is not None and name not in visible_names:
+            return []
     tasks = DownloadChain().downloading(name)
+    if visible_names is not None:
+        tasks = [task for task in tasks if getattr(task, "downloader", None) in visible_names]
     can_view_all = bool(
         _.is_superuser
         or (
@@ -732,8 +752,11 @@ async def clients(
         for d in downloaders:
             if not d.get("enabled"):
                 continue
-            allowed = d.get("allowed_users") or []
-            if not allowed or current_user.is_superuser or current_user.name in allowed:
+            if is_instance_allowed(
+                d,
+                username=current_user.name,
+                is_superuser=current_user.is_superuser,
+            ):
                 visible.append({"name": d.get("name"), "type": d.get("type")})
         return visible
     return []
