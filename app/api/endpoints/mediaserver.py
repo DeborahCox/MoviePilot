@@ -91,6 +91,38 @@ def _user_acl(userinfo: Any) -> tuple[Any, bool]:
     return getattr(userinfo, "username", None), bool(getattr(userinfo, "super_user", False))
 
 
+def _visible_mediaserver_names(userinfo: Any) -> list[str]:
+    """
+    返回当前用户可见的媒体服务器配置名，供需要遍历实例的端点使用。
+    """
+    username, is_superuser = _user_acl(userinfo)
+    return [
+        config.name
+        for config in filter_allowed_configs(
+            get_mediaserver_configs(), username=username, is_superuser=is_superuser
+        )
+        if config.name
+    ]
+
+
+def _mediaserver_name_allowed(server: Optional[str], userinfo: Any) -> bool:
+    """
+    判断结果中携带的媒体服务器配置名是否对当前用户可见。
+
+    配置中不存在的实例名交由下游按既有逻辑处理，不改变原有错误语义。
+    """
+    if not server:
+        return True
+    username, is_superuser = _user_acl(userinfo)
+    config = next(
+        (config for config in get_mediaserver_configs() if getattr(config, "name", None) == server),
+        None,
+    )
+    if config is None:
+        return True
+    return is_instance_allowed(config, username=username, is_superuser=is_superuser)
+
+
 def _require_mediaserver_access(server: Optional[str], userinfo: Any) -> None:
     """
     校验显式指定的媒体服务器实例是否对当前用户可见。
@@ -434,7 +466,32 @@ def search_library(
         search_kwargs["server"] = server
     if library_id:
         search_kwargs["library_id"] = library_id
-    results = MediaServerChain().search_library(keyword, selected_types, limit, **search_kwargs)
+    chain = MediaServerChain()
+    if server:
+        results = chain.search_library(keyword, selected_types, limit, **search_kwargs)
+    else:
+        configs = get_mediaserver_configs()
+        if not configs:
+            # 没有配置任何实例时保持原有调用，下游同样拿不到受限实例数据。
+            results = chain.search_library(keyword, selected_types, limit, **search_kwargs)
+        else:
+            # 省略 server 时只遍历当前用户可见实例，不触碰受限实例。
+            username, is_superuser = _user_acl(userinfo)
+            results = []
+            seen: set[tuple[Optional[str], str]] = set()
+            for config in filter_allowed_configs(configs, username=username, is_superuser=is_superuser):
+                name = config.name
+                if not name:
+                    continue
+                instance_kwargs = dict(search_kwargs)
+                instance_kwargs["server"] = name
+                for item in chain.search_library(keyword, selected_types, limit, **instance_kwargs):
+                    key = (item.server, str(item.item_id))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    results.append(item)
+            results = results[:limit]
     return _SchemaResponse(success=True, data=results)
 
 
@@ -889,7 +946,7 @@ async def exists_local(
     media_id: Optional[str] = None,
     season: Optional[int] = None,
     service: MediaServerQueryService = Depends(get_mediaserver_query_service),
-    _: _SchemaTokenPayload = Depends(verify_token),
+    userinfo: _SchemaTokenPayload = Depends(verify_token),
 ) -> Any:
     """
     判断本地是否存在
@@ -913,7 +970,7 @@ async def exists_local(
         media_id=media_id,
         season=season,
     )
-    if found and found.item_id:
+    if found and found.item_id and _mediaserver_name_allowed(found.server, userinfo):
         ret_info = {"id": found.item_id}
         # 条目标识只在所属服务器内唯一；旧缓存缺少服务器名称时省略该键，不输出空值
         if found.server:
@@ -926,19 +983,31 @@ async def exists_local(
     summary="查询已存在的剧集信息（媒体服务器）",
     response_model=_SchemaMediaServerExistingEpisodes,
 )
-def exists(media_in: _SchemaMediaInfo, _: _SchemaTokenPayload = Depends(verify_token)) -> Any:
+def exists(
+    media_in: _SchemaMediaInfo, userinfo: _SchemaTokenPayload = Depends(verify_token)
+) -> Any:
     """
-    根据媒体信息查询媒体库已存在的剧集信息
+    根据媒体信息查询媒体库已存在的剧集信息，只遍历当前用户可见实例。
     """
     # 转化为媒体信息对象
     mediainfo = MediaInfo()
     mediainfo.from_dict(media_in.model_dump())
-    existsinfo = MediaServerChain().media_exists(
-        mediainfo=mediainfo, query=MEDIA_SERVER_EXISTENCE_QUERY
-    )
-    if not existsinfo:
+    chain = MediaServerChain()
+    seasons: dict[int, list[int]] = {}
+    for server in _visible_mediaserver_names(userinfo):
+        existsinfo = chain.media_exists(
+            mediainfo=mediainfo, server=server, query=MEDIA_SERVER_EXISTENCE_QUERY
+        )
+        if not existsinfo:
+            continue
+        for season, episodes in (existsinfo.seasons or {}).items():
+            merged = seasons.setdefault(season, [])
+            for episode in episodes or []:
+                if episode not in merged:
+                    merged.append(episode)
+    if not seasons:
         return {}
-    seasons = existsinfo.seasons or {}
+    seasons = {season: sorted(episodes) for season, episodes in seasons.items()}
     if media_in.season is not None:
         return {media_in.season: seasons.get(media_in.season) or []}
     return seasons
@@ -951,12 +1020,14 @@ def exists(media_in: _SchemaMediaInfo, _: _SchemaTokenPayload = Depends(verify_t
     openapi_extra={COLLECTION_PAGINATION_OPENAPI_KEY: True},
 )
 def not_exists(
-    media_in: _SchemaMediaInfo, _: _SchemaTokenPayload = Depends(verify_token),
+    media_in: _SchemaMediaInfo, userinfo: _SchemaTokenPayload = Depends(verify_token),
     page: CompatiblePageParam = None,
     count: CompatibleCountParam = None,
 ) -> Any:
     """
-    根据媒体信息查询缺失电影/剧集，媒体类型兼容英文与中文值
+    根据媒体信息查询缺失电影/剧集，媒体类型兼容英文与中文值。
+
+    存在性计算只覆盖当前用户可见的媒体服务器，避免受限实例影响缺集结果。
     """
     # 媒体信息
     meta = MetaInfo(title=media_in.title or "")
@@ -973,7 +1044,8 @@ def not_exists(
     # 复用已解析的类型，避免领域对象再次将 Agent 英文值按中文枚举解析。
     mediainfo.from_dict({**media_in.model_dump(), "type": mtype})
     exist_flag, no_exists = DownloadChain().get_no_exists_info(
-        meta=meta, mediainfo=mediainfo
+        meta=meta, mediainfo=mediainfo,
+        server_names=_visible_mediaserver_names(userinfo),
     )
     media_source, media_id = resolve_media_identity(media=mediainfo)
     mediakey = build_media_key(media_source, media_id)

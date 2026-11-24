@@ -5,7 +5,7 @@
 from typing import Annotated, Any, List, Optional, Union
 
 import anyio
-from fastapi import Body, Depends
+from fastapi import Body, Depends, HTTPException, status
 
 from app.adapters.web.security.access import verify_token
 from app.api.dependencies.auth import (
@@ -72,6 +72,30 @@ from app.schemas.types import (
 )
 
 router = ResponseAPIRouter()
+
+
+def _require_downloader_access(instance: Optional[str], current_user: Any) -> None:
+    """
+    写操作提交前校验目标下载器实例对当前用户可见。
+
+    只对配置中确实存在的实例生效；未配置的实例名交由下游按既有逻辑处理。
+    已配置但无权访问时返回 403，不向受限下载器提交任务。
+    """
+    if not instance:
+        return
+    downloaders = get_configured_system_config().get(SystemConfigKey.Downloaders) or []
+    target = next(
+        (config for config in downloaders if config.get("name") == instance),
+        None,
+    )
+    if target is None:
+        return
+    if not is_instance_allowed(
+        target,
+        username=getattr(current_user, "name", None),
+        is_superuser=bool(getattr(current_user, "is_superuser", False)),
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问该下载器")
 
 
 def _prepare_subtitle_download(
@@ -448,6 +472,7 @@ def download(
     """
     添加下载任务（含媒体信息）
     """
+    _require_downloader_access(downloader, current_user)
     mediainfo: MediaInfo | MusicInfo
     if isinstance(media_in, _SchemaMusicInfo):
         mediainfo = MusicInfo.from_dict(media_in.model_dump())
@@ -510,6 +535,7 @@ def download_artist_collection(
     :param current_user: 经过认证的操作用户，作为下载历史归属
     :return: 下载添加结果，成功时包含下载任务标识
     """
+    _require_downloader_access(downloader, current_user)
     name = artist_name.strip()
     identity = artist_id.strip()
     if not is_music_media_source(media_source):
@@ -567,6 +593,7 @@ def add(
     """
     添加下载任务（不含媒体信息）
     """
+    _require_downloader_access(downloader, current_user)
     metainfo, mediainfo, error = _resolve_add_media(
         torrent_in,
         media_source,
@@ -653,6 +680,7 @@ def start(
     """
     由管理用户启动指定下载任务。
     """
+    _require_downloader_access(name, _)
     ret = DownloadChain().set_downloading(hashString, "start", name=name)
     return _SchemaResponse(success=True if ret else False)
 
@@ -666,6 +694,7 @@ def stop(
     """
     由管理用户暂停指定下载任务。
     """
+    _require_downloader_access(name, _)
     ret = DownloadChain().set_downloading(hashString, "stop", name=name)
     return _SchemaResponse(success=True if ret else False)
 
@@ -683,6 +712,7 @@ async def update_task(
     """
     由管理用户执行下载任务启停、标签、限速、Tracker 和保存位置修改。
     """
+    _require_downloader_access(payload.downloader, _)
     chain = DownloadChain()
     service = DownloadTaskMutationService(
         list_torrents=chain.list_torrents,
@@ -718,6 +748,7 @@ async def classify_source(
     """
     复用媒体识别链生成资源目录和根目录名，确认后仅通过下载器执行。
     """
+    _require_downloader_access(payload.downloader, _)
     chain = DownloadChain()
     try:
         data = await anyio.to_thread.run_sync(
@@ -795,5 +826,6 @@ def delete(
     """
     由管理用户删除下载任务及其源文件。
     """
+    _require_downloader_access(name, _)
     ret = DownloadChain().remove_downloading(hashString, name=name)
     return _SchemaResponse(success=True if ret else False)

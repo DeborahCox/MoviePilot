@@ -12,8 +12,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.endpoints import mediaserver as endpoint
+from app.chain.download.existence import DownloadExistenceOwner
+from app.schemas.mediaserver import ExistMediaInfo, MediaServerPlayItem
 from app.schemas.system import MediaServerConf
 from app.schemas.token import TokenPayload
+from app.schemas.types import MediaType
 
 
 def _configs():
@@ -223,3 +226,147 @@ def test_search_library_rejects_restricted_instance(monkeypatch):
     resp = client.get("/mediaserver/search", params={"keyword": "test", "server": "bob 的 Plex"})
     assert resp.status_code == 404
     assert called == []
+
+
+def test_search_library_without_server_touches_only_visible_instances(monkeypatch):
+    """
+    省略 server 时只搜索当前用户可见实例；受限实例既不接收查询，也不出现在结果中。
+    """
+    queried = []
+
+    def fake_search(self, keyword, types, limit, **kwargs):
+        server = kwargs.get("server")
+        queried.append(server)
+        return [MediaServerPlayItem(server=server, item_id=f"{server}-1", title="命中", type="电影")]
+
+    monkeypatch.setattr(endpoint.MediaServerChain, "search_library", fake_search)
+
+    client = _client(monkeypatch, _user("alice"))
+    resp = client.get("/mediaserver/search", params={"keyword": "test"})
+    assert resp.status_code == 200
+    assert [item["server"] for item in resp.json()["data"]] == ["公共 Emby", "alice 的 Emby"]
+    assert queried == ["公共 Emby", "alice 的 Emby"]
+
+    queried.clear()
+    client = _client(monkeypatch, _user("admin", super_user=True))
+    resp = client.get("/mediaserver/search", params={"keyword": "test"})
+    assert [item["server"] for item in resp.json()["data"]] == [
+        "公共 Emby", "alice 的 Emby", "bob 的 Plex",
+    ]
+    assert queried == ["公共 Emby", "alice 的 Emby", "bob 的 Plex"]
+
+
+def test_exists_local_hides_restricted_instance(monkeypatch):
+    """
+    本地存在性结果必须在响应层按 ACL 过滤，受限实例名和条目标识都不外泄。
+    """
+
+    async def fake_find_item(**kwargs):
+        return SimpleNamespace(item_id="m1", server="bob 的 Plex")
+
+    service = SimpleNamespace(find_item=fake_find_item)
+    client = _client(monkeypatch, _user("alice"))
+    client.app.dependency_overrides[endpoint.get_mediaserver_query_service] = lambda: service
+    resp = client.get("/mediaserver/exists", params={"title": "测试"})
+    assert resp.status_code == 200
+    assert resp.json()["data"]["item"] == {}
+
+    client = _client(monkeypatch, _user("bob"))
+    client.app.dependency_overrides[endpoint.get_mediaserver_query_service] = lambda: service
+    resp = client.get("/mediaserver/exists", params={"title": "测试"})
+    assert resp.json()["data"]["item"] == {"id": "m1", "server": "bob 的 Plex"}
+
+    client = _client(monkeypatch, _user("admin", super_user=True))
+    client.app.dependency_overrides[endpoint.get_mediaserver_query_service] = lambda: service
+    resp = client.get("/mediaserver/exists", params={"title": "测试"})
+    assert resp.json()["data"]["item"] == {"id": "m1", "server": "bob 的 Plex"}
+
+
+def test_exists_remote_only_queries_visible_instances(monkeypatch):
+    """
+    远端存在性查询只能遍历当前用户可见实例，不能从受限实例拿到剧集数据。
+    """
+    queried = []
+
+    def fake_media_exists(self, mediainfo, query=None, server=None, **kwargs):
+        queried.append(server)
+        seasons = {1: [1, 2]}
+        if server == "bob 的 Plex":
+            seasons[2] = [3]
+        return SimpleNamespace(seasons=seasons)
+
+    monkeypatch.setattr(endpoint.MediaServerChain, "media_exists", fake_media_exists)
+    payload = {"title": "测试", "type": "电视剧"}
+
+    client = _client(monkeypatch, _user("alice"))
+    resp = client.post("/mediaserver/exists_remote", json=payload)
+    assert resp.status_code == 200
+    assert resp.json()["data"] == {"1": [1, 2]}
+    assert queried == ["公共 Emby", "alice 的 Emby"]
+
+    queried.clear()
+    client = _client(monkeypatch, _user("admin", super_user=True))
+    resp = client.post("/mediaserver/exists_remote", json=payload)
+    assert resp.json()["data"] == {"1": [1, 2], "2": [3]}
+    assert queried == ["公共 Emby", "alice 的 Emby", "bob 的 Plex"]
+
+
+def test_not_exists_limits_instance_scope(monkeypatch):
+    """
+    缺集查询只传入当前用户可见实例，不让受限实例影响缺失判断。
+    """
+    captured = {}
+
+    class FakeDownloadChain:
+        def get_no_exists_info(self, **kwargs):
+            captured["server_names"] = kwargs.get("server_names")
+            return False, {}
+
+    monkeypatch.setattr(endpoint, "DownloadChain", FakeDownloadChain)
+    payload = {
+        "title": "测试", "type": "电视剧",
+        "media_source": "themoviedb", "media_id": "123",
+    }
+
+    client = _client(monkeypatch, _user("alice"))
+    resp = client.post("/mediaserver/notexists", json=payload)
+    assert resp.status_code == 200
+    assert captured["server_names"] == ["公共 Emby", "alice 的 Emby"]
+
+    client = _client(monkeypatch, _user("admin", super_user=True))
+    resp = client.post("/mediaserver/notexists", json=payload)
+    assert resp.status_code == 200
+    assert captured["server_names"] == ["公共 Emby", "alice 的 Emby", "bob 的 Plex"]
+
+
+def test_existence_owner_honors_explicit_server_scope(monkeypatch):
+    """
+    缺集计算层必须按传入白名单遍历实例；空名单不触碰任何实例。
+    """
+    queried = []
+    owner = DownloadExistenceOwner.__new__(DownloadExistenceOwner)
+    monkeypatch.setattr(
+        "app.chain.download.existence.get_mediaserver_configs",
+        lambda: [SimpleNamespace(name="公共 Emby"), SimpleNamespace(name="bob 的 Plex")],
+    )
+    monkeypatch.setattr(
+        owner, "media_server_repository",
+        SimpleNamespace(get_item_id=lambda **kwargs: None),
+        raising=False,
+    )
+
+    def fake_media_exists(**kwargs):
+        queried.append(kwargs.get("server"))
+        return ExistMediaInfo(type=MediaType.TV, seasons={1: [1, 2]})
+
+    monkeypatch.setattr(owner, "media_exists", fake_media_exists)
+    mediainfo = SimpleNamespace(type=MediaType.TV, title_year="测试")
+
+    result = owner._media_exists_with_server_cache(mediainfo, query={}, server_names=["公共 Emby"])
+    assert result is not None
+    assert queried == ["公共 Emby"]
+
+    queried.clear()
+    result = owner._media_exists_with_server_cache(mediainfo, query={}, server_names=[])
+    assert result is None
+    assert queried == []

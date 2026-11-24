@@ -2,7 +2,7 @@
 媒体存在性计算与缺失集投影 owner。
 """
 
-from typing import Any, Dict, Optional, Tuple, cast
+from typing import Any, Dict, Iterable, Optional, Tuple, cast
 
 from app.application.mediaserver import (
     MEDIA_SERVER_EXISTENCE_QUERY,
@@ -37,6 +37,7 @@ class DownloadExistenceOwner(_DownloadOwnerBase):
                            *,
                            totals_are_episode_numbers: bool = False,
                            raise_on_query_failure: bool = False,
+                           server_names: Optional[Iterable[str]] = None,
                            ) -> Tuple[bool, Dict[str, Dict[int, NotExistMediaInfo]]]:
         """
         检查媒体库，查询电影或音乐是否存在；对于剧集同时返回不存在的季集信息
@@ -48,6 +49,8 @@ class DownloadExistenceOwner(_DownloadOwnerBase):
         :param totals_are_episode_numbers: 指定的总集数为季内末集号；早于季首时沿用原有集数口径
         :param raise_on_query_failure: 剧集查询失败时抛 MediaServerQueryError 而不是写出整季缺失；
             默认 False 保持既有行为，仅订阅等需要区分失败与未找到的调用方传入 True
+        :param server_names: 可选的媒体服务器配置名白名单；由用户端点传入可见实例集合，
+            省略时保持原有全实例遍历
         :return: 当前媒体是否缺失，各标题总的季集和缺失的季集
         :raises MediaServerQueryError: 剧集查询失败且 raise_on_query_failure 为 True 时
         """
@@ -72,6 +75,7 @@ class DownloadExistenceOwner(_DownloadOwnerBase):
                     "media_source": media_source,
                     "media_id": media_id,
                 },
+                server_names=server_names,
             )
             if exists_movies:
                 logger.info(f"媒体库中已存在电影：{mediainfo.title_year}")
@@ -86,6 +90,7 @@ class DownloadExistenceOwner(_DownloadOwnerBase):
                     "title": mediainfo.title,
                     "year": mediainfo.year,
                 },
+                server_names=server_names,
             )
             if exists_music:
                 logger.info(f"媒体库中已存在音乐：{mediainfo.title_year}")
@@ -120,6 +125,7 @@ class DownloadExistenceOwner(_DownloadOwnerBase):
                     "season": mediainfo.season,
                 },
                 raise_on_query_failure=raise_on_query_failure,
+                server_names=server_names,
             )
             existing_seasons = (exists_tvs.seasons or {}) if exists_tvs else {}
             for season, episodes in mediainfo.seasons.items():
@@ -152,6 +158,7 @@ class DownloadExistenceOwner(_DownloadOwnerBase):
         query: dict[str, Any],
         *,
         raise_on_query_failure: bool = False,
+        server_names: Optional[Iterable[str]] = None,
     ) -> Optional[ExistMediaInfo]:
         """
         按媒体服务器隔离缓存条目，并合并各服务器已确认存在的剧集。
@@ -160,11 +167,21 @@ class DownloadExistenceOwner(_DownloadOwnerBase):
         :param query: 本次查询的媒体服务器参数
         :param raise_on_query_failure: 任一服务器剧集查询失败时抛 MediaServerQueryError，
             避免用其他服务器的部分集数推断缺失；默认 False 时保留已确认结果
+        :param server_names: 可选的媒体服务器白名单；显式传入空集合时不查询任何实例
         :return: 已确认存在的媒体信息；没有服务器确认存在时为 None
         :raises MediaServerQueryError: 任一剧集查询失败且 raise_on_query_failure 为 True
         """
-        server_names = [str(config.name) for config in get_mediaserver_configs() if config.name]
+        if server_names is None:
+            # 保持原有全实例遍历语义，仅在调用方显式给出白名单时收敛范围。
+            scoped = False
+            server_names = [str(config.name) for config in get_mediaserver_configs() if config.name]
+        else:
+            scoped = True
+            server_names = [str(name) for name in server_names if name]
         if not server_names:
+            if scoped:
+                # 当前用户没有可见实例，不能让受限实例的数据影响结果。
+                return None
             itemid = self.media_server_repository.get_item_id(**query)
             return self.media_exists(
                 mediainfo=mediainfo, itemid=itemid, query=MEDIA_SERVER_EXISTENCE_QUERY,

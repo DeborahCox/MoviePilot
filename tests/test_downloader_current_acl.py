@@ -2,9 +2,17 @@
 下载任务查询端点按下载器 allowed_users 过滤的测试。
 """
 
+import asyncio
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
+
 from app.api.endpoints import download as endpoint
+from app.schemas.context import MediaInfo as _SchemaMediaInfo
+from app.schemas.context import TorrentInfo as _SchemaTorrentInfo
+from app.schemas.download import DownloadSourceClassificationRequest, DownloadTaskUpdateRequest
+from app.schemas.types import MediaSource
 
 
 def _configs():
@@ -104,3 +112,159 @@ def test_paths_endpoint_unchanged():
     /download/paths 仅返回目录，与下载器实例无关，保持原有行为（无 ACL 依赖）。
     """
     assert endpoint.paths.__name__ == "paths"
+
+
+_HASH = "a" * 40
+
+
+def _setup_write(monkeypatch):
+    """
+    为下载写端点装配配置与下载器替身，记录所有下游调用。
+    """
+    monkeypatch.setattr(
+        endpoint, "get_configured_system_config",
+        lambda: SimpleNamespace(get=lambda key: _configs()),
+    )
+    monkeypatch.setattr(endpoint, "_is_tmdb_recognize_source", lambda: False)
+    monkeypatch.setattr(
+        endpoint, "MediaChain",
+        lambda: SimpleNamespace(
+            recognize_by_meta=lambda *a, **kw: _SchemaMediaInfo(title="测试", type="电影"),
+            recognize_media=lambda *a, **kw: None,
+        ),
+    )
+    monkeypatch.setattr(endpoint, "organize_existing_source", lambda *a, **kw: {})
+
+    calls = []
+
+    class FakeDownloadChain:
+        def download_single(self, **kwargs):
+            calls.append(("download_single", kwargs))
+            return "task-1"
+
+        def set_downloading(self, *args, **kwargs):
+            calls.append(("set_downloading", args, kwargs))
+            return True
+
+        def remove_downloading(self, hash_string, **kwargs):
+            calls.append(("remove_downloading", hash_string, kwargs))
+            return True
+
+        def list_torrents(self, *args, **kwargs):
+            return []
+
+        def set_torrents_tag(self, *args, **kwargs):
+            return True
+
+        def update_torrent(self, *args, **kwargs):
+            return {}
+
+    monkeypatch.setattr(endpoint, "DownloadChain", FakeDownloadChain)
+    return calls
+
+
+def _media_in():
+    return _SchemaMediaInfo(title="测试", type="电影")
+
+
+def _torrent_in():
+    return _SchemaTorrentInfo(title="测试", category="电影")
+
+
+def test_write_endpoints_reject_restricted_downloader(monkeypatch):
+    """
+    所有接受实例名的写端点都不得向受限下载器提交任务。
+    """
+    calls = _setup_write(monkeypatch)
+    user = _principal("alice")
+
+    def denied(fn, *args, **kwargs):
+        with pytest.raises(HTTPException) as error:
+            fn(*args, **kwargs)
+        assert error.value.status_code == 403
+        assert calls == []
+
+    denied(
+        endpoint.download, media_in=_media_in(), torrent_in=_torrent_in(),
+        downloader="bob 的 qB", current_user=user,
+    )
+    denied(
+        endpoint.download_artist_collection, artist_name="甲", artist_id="123",
+        media_source=MediaSource.MusicBrainz, torrent_in=_torrent_in(),
+        downloader="bob 的 qB", current_user=user,
+    )
+    denied(
+        endpoint.add, torrent_in=_torrent_in(),
+        downloader="bob 的 qB", current_user=user,
+    )
+    denied(endpoint.start, _HASH, "bob 的 qB", user)
+    denied(endpoint.stop, _HASH, "bob 的 qB", user)
+    denied(endpoint.delete, _HASH, "bob 的 qB", user)
+    denied(
+        asyncio.run,
+        endpoint.update_task(
+            _HASH, DownloadTaskUpdateRequest(downloader="bob 的 qB", action="start"),
+            _principal("alice"),
+        ),
+    )
+    denied(
+        asyncio.run,
+        endpoint.classify_source(
+            _HASH, DownloadSourceClassificationRequest(downloader="bob 的 qB"),
+            _principal("alice"),
+        ),
+    )
+
+
+def test_write_endpoints_allow_visible_and_superuser(monkeypatch):
+    """
+    名单内用户与 superuser 可以正常提交，下载管理权限不能绕过实例 ACL。
+    """
+    calls = _setup_write(monkeypatch)
+
+    assert endpoint.download(
+        media_in=_media_in(), torrent_in=_torrent_in(),
+        downloader="alice 的 TR", current_user=_principal("alice"),
+    ).success is True
+    assert len(calls) == 1
+
+    calls.clear()
+    assert endpoint.download(
+        media_in=_media_in(), torrent_in=_torrent_in(),
+        downloader="bob 的 qB", current_user=_principal("admin", superuser=True),
+    ).success is True
+    assert len(calls) == 1
+
+    calls.clear()
+    assert endpoint.add(
+        torrent_in=_torrent_in(), downloader="alice 的 TR",
+        current_user=_principal("alice"),
+    ).success is True
+    assert len(calls) == 1
+
+    calls.clear()
+    assert endpoint.download_artist_collection(
+        artist_name="甲", artist_id="123", media_source=MediaSource.MusicBrainz,
+        torrent_in=_torrent_in(), downloader="alice 的 TR",
+        current_user=_principal("alice"),
+    ).success is True
+    assert len(calls) == 1
+
+    for action in (endpoint.start, endpoint.stop, endpoint.delete):
+        calls.clear()
+        assert action(_HASH, "alice 的 TR", _principal("alice")).success is True
+        assert len(calls) == 1
+
+    calls.clear()
+    result = asyncio.run(endpoint.update_task(
+        _HASH, DownloadTaskUpdateRequest(downloader="alice 的 TR", action="start"),
+        _principal("alice"),
+    ))
+    assert result.success is True
+
+    calls.clear()
+    result = asyncio.run(endpoint.classify_source(
+        _HASH, DownloadSourceClassificationRequest(downloader="alice 的 TR"),
+        _principal("alice"),
+    ))
+    assert result.success is True
