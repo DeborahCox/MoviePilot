@@ -536,6 +536,7 @@ def download_artist_collection(
     :return: 下载添加结果，成功时包含下载任务标识
     """
     _require_downloader_access(downloader, current_user)
+    _require_downloader_access(torrent_in.site_downloader, current_user)
     name = artist_name.strip()
     identity = artist_id.strip()
     if not is_music_media_source(media_source):
@@ -594,6 +595,7 @@ def add(
     添加下载任务（不含媒体信息）
     """
     _require_downloader_access(downloader, current_user)
+    _require_downloader_access(torrent_in.site_downloader, current_user)
     metainfo, mediainfo, error = _resolve_add_media(
         torrent_in,
         media_source,

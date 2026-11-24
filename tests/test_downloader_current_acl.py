@@ -268,3 +268,70 @@ def test_write_endpoints_allow_visible_and_superuser(monkeypatch):
         _principal("alice"),
     ))
     assert result.success is True
+
+
+def _torrent_with_site_downloader(site_downloader):
+    """
+    构造请求体里带 site_downloader 的种子信息，模拟下载器注入路径。
+    """
+    return _SchemaTorrentInfo(
+        title="测试", category="电影", site_downloader=site_downloader,
+    )
+
+
+def test_write_endpoints_reject_site_downloader_injection(monkeypatch):
+    """
+    受限用户即便把 downloader 置空，也不能借 torrent_in.site_downloader 绕过 ACL。
+    """
+    calls = _setup_write(monkeypatch)
+    user = _principal("alice")
+    injected = _torrent_with_site_downloader("bob 的 qB")
+
+    def denied(fn, *args, **kwargs):
+        with pytest.raises(HTTPException) as error:
+            fn(*args, **kwargs)
+        assert error.value.status_code == 403
+        assert calls == []
+
+    denied(endpoint.add, torrent_in=injected, downloader=None, current_user=user)
+    denied(
+        endpoint.download_artist_collection,
+        artist_name="甲", artist_id="123", media_source=MediaSource.MusicBrainz,
+        torrent_in=injected, downloader=None, current_user=user,
+    )
+
+
+def test_write_endpoints_allow_site_downloader_for_visible_and_superuser(monkeypatch):
+    """
+    名单内用户与 superuser 仍可通过 site_downloader 指定有权限的下载器实例。
+    """
+    calls = _setup_write(monkeypatch)
+    allowed = _torrent_with_site_downloader("alice 的 TR")
+
+    assert endpoint.add(
+        torrent_in=allowed, downloader=None, current_user=_principal("alice"),
+    ).success is True
+    assert len(calls) == 1
+
+    calls.clear()
+    assert endpoint.download_artist_collection(
+        artist_name="甲", artist_id="123", media_source=MediaSource.MusicBrainz,
+        torrent_in=allowed, downloader=None, current_user=_principal("alice"),
+    ).success is True
+    assert len(calls) == 1
+
+    calls.clear()
+    restricted = _torrent_with_site_downloader("bob 的 qB")
+    assert endpoint.add(
+        torrent_in=restricted, downloader=None,
+        current_user=_principal("admin", superuser=True),
+    ).success is True
+    assert len(calls) == 1
+
+    calls.clear()
+    assert endpoint.download_artist_collection(
+        artist_name="甲", artist_id="123", media_source=MediaSource.MusicBrainz,
+        torrent_in=restricted, downloader=None,
+        current_user=_principal("admin", superuser=True),
+    ).success is True
+    assert len(calls) == 1
