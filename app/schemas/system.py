@@ -43,6 +43,7 @@ class MediaServerConf(BaseModel):
     enabled: Optional[bool] = Field(default=False, description="是否启用")
     sync_libraries: Optional[list[str]] = Field(default_factory=list, description="同步媒体体库列表")
     sync_interval: Optional[int] = Field(default=None, description="自动同步间隔（小时），未设置时使用旧全局配置")
+    allowed_users: Optional[list[str]] = Field(default_factory=list, description="允许访问的用户名列表；为空表示所有用户可用")
 
     @field_validator("sync_interval", mode="before")
     @classmethod
@@ -76,6 +77,7 @@ class DownloaderConf(BaseModel):
     config: Optional[dict[str, Any]] = Field(default_factory=dict, description="配置")
     enabled: Optional[bool] = Field(default=False, description="是否启用")
     path_mapping: Optional[list[tuple[str, str]]] = Field(default_factory=list, description="路径映射")
+    allowed_users: Optional[list[str]] = Field(default_factory=list, description="允许访问的用户名列表；为空表示所有用户可用")
 
 
 class NotificationConf(BaseModel):

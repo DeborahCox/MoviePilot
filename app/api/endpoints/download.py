@@ -11,6 +11,7 @@ from app.adapters.web.security.access import verify_token
 from app.api.dependencies.auth import (
     get_current_active_manage_user,
     get_current_active_user,
+    get_current_active_user_async,
     get_current_download_viewer,
 )
 from app.api.dependencies.site import get_site_sync_query_service
@@ -712,18 +713,29 @@ async def classify_source(
     summary="查询可用下载器",
     response_model=List[_SchemaServiceClientInfo],
 )
-async def clients(_: _SchemaTokenPayload = Depends(verify_token), page: CompatiblePageParam = None, count: CompatibleCountParam = None) -> Any:
+async def clients(
+    current_user: ApiPrincipal = Depends(get_current_active_user_async),
+    page: CompatiblePageParam = None,
+    count: CompatibleCountParam = None,
+) -> Any:
     """
-    查询已启用的下载器名称与类型。
+    查询当前用户可见的已启用下载器名称与类型。
 
-    :param _: 已验证的访问令牌
+    :param current_user: 当前已激活用户，用于按允许访问用户名过滤
     :param page: 兼容客户端的分页参数，此接口不据此分页
     :param count: 兼容客户端的数量参数，此接口不据此截断
-    :return: 已启用下载器的名称和类型列表
+    :return: 当前用户可见的已启用下载器的名称和类型列表
     """
     downloaders: List[dict[str, object]] = get_configured_system_config().get(SystemConfigKey.Downloaders)
     if downloaders:
-        return [{"name": d.get("name"), "type": d.get("type")} for d in downloaders if d.get("enabled")]
+        visible = []
+        for d in downloaders:
+            if not d.get("enabled"):
+                continue
+            allowed = d.get("allowed_users") or []
+            if not allowed or current_user.is_superuser or current_user.name in allowed:
+                visible.append({"name": d.get("name"), "type": d.get("type")})
+        return visible
     return []
 
 

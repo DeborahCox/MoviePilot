@@ -26,7 +26,10 @@ from app.adapters.mediastream import (
 from app.adapters.mediastream import _configured_stream_hosts as _configured_media_stream_hosts
 from app.adapters.mediastream import _create_file_stream_ticket as _create_media_file_stream_ticket
 from app.adapters.web.security.access import verify_resource_token, verify_token
-from app.api.dependencies.auth import get_current_active_manage_user
+from app.api.dependencies.auth import (
+    get_current_active_manage_user,
+    get_current_active_user_async,
+)
 from app.api.dependencies.history import get_mediaserver_query_service
 from app.api.endpoints.storage import _ensure_manage_storage_item
 from app.api.principal import ApiPrincipal
@@ -1193,20 +1196,27 @@ def report_progress(
     summary="查询可用媒体服务器",
     response_model=List[_SchemaServiceClientInfo],
 )
-async def clients(_: _SchemaTokenPayload = Depends(verify_token), page: CompatiblePageParam = None, count: CompatibleCountParam = None) -> Any:
+async def clients(
+    current_user: ApiPrincipal = Depends(get_current_active_user_async),
+    page: CompatiblePageParam = None,
+    count: CompatibleCountParam = None,
+) -> Any:
     """
-    查询已启用的媒体服务器名称与类型。
+    查询当前用户可见的已启用媒体服务器名称与类型。
 
-    :param _: 已验证的访问令牌
+    :param current_user: 当前已激活用户，用于按允许访问用户名过滤
     :param page: 兼容客户端的分页参数，此接口不据此分页
     :param count: 兼容客户端的数量参数，此接口不据此截断
-    :return: 已启用媒体服务器的名称和类型列表
+    :return: 当前用户可见的已启用媒体服务器的名称和类型列表
     """
     mediaservers: List[dict[str, object]] = get_configured_system_config().get(SystemConfigKey.MediaServers)
     if mediaservers:
-        return [
-            {"name": d.get("name"), "type": d.get("type")}
-            for d in mediaservers
-            if d.get("enabled")
-        ]
+        visible = []
+        for d in mediaservers:
+            if not d.get("enabled"):
+                continue
+            allowed = d.get("allowed_users") or []
+            if not allowed or current_user.is_superuser or current_user.name in allowed:
+                visible.append({"name": d.get("name"), "type": d.get("type")})
+        return visible
     return []
