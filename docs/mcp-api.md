@@ -279,7 +279,7 @@ Web 影视精确与标题 SSE 的 `manual_paging=true` 模式在最终 `done` �
 快照立即失效，在途旧结果不能写回新会话；失败查询允许重试。
 
 `GET /api/v1/site/test/{site_id}` 检查站点连通性和适配器支持的登录状态。普通站点只检测
-网页和 Cookie，成功说明不代表「用户认证」中的 UID、Passkey 等凭据有效；API 站点使用
+网页和 Cookie，连通测试通过不代表「用户认证」中的 UID、Passkey 等凭据有效；API 站点使用
 各自已适配的登录接口。独立的用户认证仍通过 `POST /api/v1/site/auth` 执行，成功保存时清除
 切换站点遗留的其他已知站点前缀字段；启动认证也会过滤这些字段，未知扩展参数继续兼容。
 过滤后参数为空时直接拒绝请求，避免资源改为读取环境变量并认证其他站点。
@@ -331,7 +331,10 @@ Web 影视精确与标题 SSE 的 `manual_paging=true` 模式在最终 `done` �
 Web 会话沿用当前用户；无渠道调用不携带收件人，插件回执按既有管理员通知目标路由，
 没有可用目标时不发送。
 
-`GET /api/v1/message/notification` 的可空 `poster` 字段提供独立媒体海报。
+`GET /api/v1/message/history` 分页返回消息表中的全部历史记录（包含 `action=0` 的接收消息与
+`action=1` 的发送消息，`GET /api/v1/message/web` 作为兼容入口保留相同行为）；
+`GET /api/v1/message/notification` 仅返回清理水位之后的系统已发送通知（`action=1`），
+其可空 `poster` 字段提供独立媒体海报。
 新通知从已有媒体上下文提取海报；`image` 继续保留原有渠道图片语义。
 旧通知及没有海报的通知返回 `poster: null`，客户端不应将背景图裁切成海报。
 
