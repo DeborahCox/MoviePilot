@@ -20,6 +20,11 @@ from app.api.deps import (
     get_current_active_superuser_async,
     get_current_active_user,
     get_current_active_user_async,
+    get_current_dashboard_media_viewer,
+    get_current_dashboard_recent_imports_viewer,
+    get_current_dashboard_runtime_viewer,
+    get_current_dashboard_scheduler_viewer,
+    get_current_dashboard_viewer,
 )
 from app.api.endpoints import agent as agent_endpoint
 from app.api.endpoints import dashboard as dashboard_endpoint
@@ -37,6 +42,7 @@ from app.api.endpoints import system as system_endpoint
 from app.api.endpoints import transfer as transfer_endpoint
 from app.api.endpoints import user as user_endpoint
 from app.application.security.token import decode_access_token
+from app.domain.authorization import normalize_web_permissions
 from app.schemas.types import SystemConfigKey
 
 
@@ -143,32 +149,95 @@ def test_rule_group_mutation_routes_accept_slashes_in_group_names():
     assert routes[(rule_endpoint.delete_rule_group, frozenset({"DELETE"}))] == "/groups/{name:path}"
 
 
-def test_dashboard_endpoints_require_superuser():
+def test_dashboard_endpoints_use_feature_permissions():
     """
-    仪表板页面相关接口必须只允许管理员访问。
+    仪表板低敏接口按 dashboard 功能键放行，高敏接口继续要求管理员。
     """
-    assert _dependency_of(dashboard_endpoint.statistic, "_") is get_current_active_superuser
-    assert _dependency_of(dashboard_endpoint.storage, "_") is get_current_active_superuser
+    assert _dependency_of(dashboard_endpoint.statistic, "_") is get_current_dashboard_media_viewer
+    assert _dependency_of(dashboard_endpoint.storage, "_") is get_current_dashboard_runtime_viewer
+    assert _dependency_of(dashboard_endpoint.downloader, "_") is get_current_dashboard_runtime_viewer
+    assert _dependency_of(dashboard_endpoint.schedule, "_") is get_current_dashboard_scheduler_viewer
+    assert _dependency_of(dashboard_endpoint.schedule_progress, "_") is get_current_dashboard_scheduler_viewer
+    assert _dependency_of(dashboard_endpoint.recent_imports, "_") is get_current_dashboard_recent_imports_viewer
+    assert _dependency_of(dashboard_endpoint.transfer, "_") is get_current_dashboard_recent_imports_viewer
+    assert _dependency_of(dashboard_endpoint.cpu, "_") is get_current_dashboard_runtime_viewer
+    assert _dependency_of(dashboard_endpoint.memory, "_") is get_current_dashboard_runtime_viewer
+    assert _dependency_of(dashboard_endpoint.network, "_") is get_current_dashboard_runtime_viewer
     assert _dependency_of(dashboard_endpoint.processes, "_") is get_current_active_superuser
     assert _dependency_of(dashboard_endpoint.system_info, "_") is get_current_active_superuser
-    assert _dependency_of(dashboard_endpoint.downloader, "_") is get_current_active_superuser
-    assert _dependency_of(dashboard_endpoint.schedule, "_") is get_current_active_superuser
-    assert _dependency_of(dashboard_endpoint.transfer, "_") is get_current_active_superuser
-    assert _dependency_of(dashboard_endpoint.cpu, "_") is get_current_active_superuser
-    assert _dependency_of(dashboard_endpoint.memory, "_") is get_current_active_superuser
-    assert _dependency_of(dashboard_endpoint.network, "_") is get_current_active_superuser
 
 
-def test_plugin_dashboard_endpoints_require_superuser():
+def test_plugin_dashboard_endpoints_accept_dashboard_viewers():
     """
-    插件仪表板接口必须只允许管理员访问。
+    插件仪表板接口允许具备 dashboard 分类权限的用户访问。
     """
-    assert _dependency_of(plugin_endpoint.plugin_dashboard_meta, "_") is get_current_active_superuser
-    assert _dependency_of(plugin_endpoint.plugin_dashboard_by_key, "_") is get_current_active_superuser
-    assert _dependency_of(plugin_endpoint.plugin_dashboard, "_") is get_current_active_superuser
+    assert _dependency_of(plugin_endpoint.plugin_dashboard_meta, "_") is get_current_dashboard_viewer
+    assert _dependency_of(plugin_endpoint.plugin_dashboard_by_key, "_") is get_current_dashboard_viewer
+    assert _dependency_of(plugin_endpoint.plugin_dashboard, "_") is get_current_dashboard_viewer
     assert _dependency_of(plugin_endpoint.plugin_capabilities, "_") is get_current_active_superuser_async
     assert _dependency_of(plugin_endpoint.plugin_data_summary, "_") is get_current_active_superuser_async
     assert _dependency_of(plugin_endpoint.reload_plugin, "_") is get_current_active_superuser
+
+
+def test_dashboard_viewer_enforces_feature_defaults():
+    """
+    普通用户开启 dashboard 后，低敏功能默认放行，高敏功能必须显式开启。
+    """
+    viewer = SimpleNamespace(is_superuser=False, permissions={"dashboard": True, "features": {}})
+    admin = SimpleNamespace(is_superuser=True, permissions={})
+
+    assert get_current_dashboard_viewer(viewer) is viewer
+    assert get_current_dashboard_media_viewer(viewer) is viewer
+    assert get_current_dashboard_runtime_viewer(viewer) is viewer
+    for dependency in (
+        get_current_dashboard_scheduler_viewer,
+        get_current_dashboard_recent_imports_viewer,
+    ):
+        with pytest.raises(HTTPException) as error:
+            dependency(viewer)
+        assert error.value.status_code == 403
+        assert dependency(admin) is admin
+
+    enabled = SimpleNamespace(
+        is_superuser=False,
+        permissions={"dashboard": True, "features": {"dashboard.scheduler": True, "dashboard.recentImports": True}},
+    )
+    assert get_current_dashboard_scheduler_viewer(enabled) is enabled
+    assert get_current_dashboard_recent_imports_viewer(enabled) is enabled
+
+    without_dashboard = SimpleNamespace(is_superuser=False, permissions={"dashboard": False, "features": {}})
+    with pytest.raises(HTTPException):
+        get_current_dashboard_viewer(without_dashboard)
+
+
+def test_normalize_web_permissions_fills_dashboard_feature_defaults():
+    """
+    归一化权限数据时必须补齐 dashboard 功能键，避免缺省键被按允许处理。
+    """
+    normalized = normalize_web_permissions({"dashboard": True, "features": {}})
+    assert normalized["dashboard"] is True
+    assert normalized["features"]["dashboard.media"] is True
+    assert normalized["features"]["dashboard.runtime"] is True
+    assert normalized["features"]["dashboard.scheduler"] is False
+    assert normalized["features"]["dashboard.recentImports"] is False
+    assert normalized["features"]["dashboard.system"] is False
+    assert normalized["features"]["dashboard.customize"] is False
+
+
+def test_normalize_web_permissions_restores_dashboard_from_legacy_features():
+    """
+    旧后端丢弃 dashboard 分类但保留功能键时，应从显式开启的功能恢复访问。
+    """
+    legacy = normalize_web_permissions({"features": {"dashboard.media": True}})
+    assert legacy["dashboard"] is True
+
+    explicit_denied = normalize_web_permissions(
+        {"dashboard": False, "features": {"dashboard.media": True}}
+    )
+    assert explicit_denied["dashboard"] is False
+
+    disabled = normalize_web_permissions({"features": {"dashboard.scheduler": False}})
+    assert disabled["dashboard"] is False
 
 
 def test_site_destructive_commands_require_superuser():

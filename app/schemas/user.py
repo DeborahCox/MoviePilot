@@ -20,6 +20,7 @@ class UserPermissions(TypedDict, total=False):
     :ivar search: 是否允许搜索资源
     :ivar subscribe: 是否允许管理订阅
     :ivar manage: 是否允许系统管理
+    :ivar dashboard: 是否允许访问仪表盘
     :ivar admin: 管理员入口标识，实际授权仍取决于超级用户身份
     :ivar features: 功能键到启用状态的映射
     """
@@ -28,6 +29,7 @@ class UserPermissions(TypedDict, total=False):
     search: bool
     subscribe: bool
     manage: bool
+    dashboard: bool
     admin: bool
     features: dict[str, bool]
 

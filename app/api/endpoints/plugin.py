@@ -26,6 +26,7 @@ from app.api.context import (
 from app.api.dependencies.auth import (
     get_current_active_superuser,
     get_current_active_superuser_async,
+    get_current_dashboard_viewer,
 )
 from app.api.dependencies.plugin import get_plugin_config_command
 from app.api.endpoints.pluginfolder import router as plugin_folders_router
@@ -728,7 +729,7 @@ def plugin_page(
 
 @router.get("/dashboard/meta", summary="获取所有插件仪表板元信息", response_model=List[_SchemaPluginDashboardMetaItem])
 def plugin_dashboard_meta(
-    _: ApiPrincipal = Depends(get_current_active_superuser),
+    _: ApiPrincipal = Depends(get_current_dashboard_viewer),
     page: CompatiblePageParam = None,
     count: CompatibleCountParam = None,
 ) -> List[dict[str, str]]:
@@ -743,7 +744,7 @@ def plugin_dashboard_by_key(
     plugin_id: str,
     key: str,
     user_agent: Annotated[str | None, Header()] = None,
-    _: ApiPrincipal = Depends(get_current_active_superuser),
+    _: ApiPrincipal = Depends(get_current_dashboard_viewer),
 ) -> Optional[_SchemaPluginDashboard]:
     """
     根据插件ID获取插件仪表板
@@ -763,7 +764,7 @@ def plugin_dashboard_by_key(
 def plugin_dashboard(
     plugin_id: str,
     user_agent: Annotated[str | None, Header()] = None,
-    _: ApiPrincipal = Depends(get_current_active_superuser),
+    _: ApiPrincipal = Depends(get_current_dashboard_viewer),
 ) -> Optional[_SchemaPluginDashboard]:
     """
     根据插件ID获取插件仪表板

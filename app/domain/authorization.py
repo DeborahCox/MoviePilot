@@ -99,7 +99,7 @@ CHANNEL_PUBLIC_OPERATIONS = frozenset(
 )
 
 # 网页普通用户支持的顶层权限分类；admin 标记不能授予超级管理员身份。
-WEB_PERMISSION_CATEGORIES = ("discovery", "search", "subscribe", "manage")
+WEB_PERMISSION_CATEGORIES = ("discovery", "search", "subscribe", "manage", "dashboard")
 
 # 网页权限分类的中文名称，用于向模型说明当前用户具备的真实边界。
 WEB_PERMISSION_CATEGORY_LABELS = {
@@ -107,6 +107,7 @@ WEB_PERMISSION_CATEGORY_LABELS = {
     "search": "资源搜索",
     "subscribe": "订阅管理",
     "manage": "系统管理（站点/下载/历史/文件/工作流等受托管理项）",
+    "dashboard": "仪表盘",
 }
 
 # 网页功能级权限键的中文名称，与前端权限配置保持一致。
@@ -124,6 +125,22 @@ WEB_PERMISSION_FEATURE_LABELS = {
     "manage.history": "历史记录",
     "manage.filemanager": "文件管理",
     "manage.site": "站点管理",
+    "dashboard.media": "媒体概览",
+    "dashboard.runtime": "资源概览",
+    "dashboard.scheduler": "后台服务",
+    "dashboard.recentImports": "最近整理",
+    "dashboard.system": "系统信息",
+    "dashboard.customize": "布局与显示设置",
+}
+
+# 普通用户开启仪表盘分类时各功能的安全默认值；高敏功能必须显式开启。
+DASHBOARD_FEATURE_DEFAULTS = {
+    "dashboard.media": True,
+    "dashboard.runtime": True,
+    "dashboard.scheduler": False,
+    "dashboard.recentImports": False,
+    "dashboard.system": False,
+    "dashboard.customize": False,
 }
 
 # 订阅媒体类型与功能级权限键的映射。
@@ -316,10 +333,19 @@ def normalize_web_permissions(permissions: Mapping[str, Any] | None) -> dict[str
         for key, value in raw_features.items():
             if isinstance(key, str) and isinstance(value, bool):
                 features[key] = value
+    explicit_features = features.copy()
+    for key, default in DASHBOARD_FEATURE_DEFAULTS.items():
+        features.setdefault(key, default)
     normalized: dict[str, Any] = {
         category: source.get(category) is True
         for category in WEB_PERMISSION_CATEGORIES
     }
+    # 旧后端 Schema 曾丢弃 dashboard 分类但保留 dashboard.* 功能开关；
+    # 仅在分类字段缺失时依据显式开启的功能恢复访问，显式 false 仍然拒绝。
+    if "dashboard" not in source:
+        normalized["dashboard"] = any(
+            explicit_features.get(key) is True for key in DASHBOARD_FEATURE_DEFAULTS
+        )
     normalized["features"] = features
     return normalized
 

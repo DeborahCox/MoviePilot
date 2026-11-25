@@ -159,6 +159,57 @@ async def get_current_active_user_async(
     return current_user
 
 
+def _ensure_dashboard_permission(current_user: Any, feature: str | None = None) -> Any:
+    """
+    校验网页登录用户是否可以查看仪表盘及指定功能卡片。
+
+    :param current_user: 当前已认证激活用户
+    :param feature: 可选功能级权限键
+    :return: 通过校验的当前用户
+    """
+    if current_user.is_superuser:
+        return current_user
+    permissions = getattr(current_user, "permissions", None)
+    if has_web_permission(False, permissions, "dashboard", feature):
+        return current_user
+    raise HTTPException(status_code=403, detail="用户权限不足")
+
+
+def get_current_dashboard_viewer(current_user: Any = Depends(get_current_active_user)) -> Any:
+    """
+    返回具备仪表盘分类权限的激活用户。
+    """
+    return _ensure_dashboard_permission(current_user)
+
+
+def get_current_dashboard_media_viewer(current_user: Any = Depends(get_current_active_user)) -> Any:
+    """
+    返回可查看仪表盘媒体概览的激活用户。
+    """
+    return _ensure_dashboard_permission(current_user, "dashboard.media")
+
+
+def get_current_dashboard_runtime_viewer(current_user: Any = Depends(get_current_active_user)) -> Any:
+    """
+    返回可查看仪表盘资源概览的激活用户。
+    """
+    return _ensure_dashboard_permission(current_user, "dashboard.runtime")
+
+
+def get_current_dashboard_scheduler_viewer(current_user: Any = Depends(get_current_active_user)) -> Any:
+    """
+    返回可查看仪表盘后台服务的激活用户。
+    """
+    return _ensure_dashboard_permission(current_user, "dashboard.scheduler")
+
+
+def get_current_dashboard_recent_imports_viewer(current_user: Any = Depends(get_current_active_user)) -> Any:
+    """
+    返回可查看仪表盘最近整理卡片的激活用户。
+    """
+    return _ensure_dashboard_permission(current_user, "dashboard.recentImports")
+
+
 def _ensure_manage_user(current_user: Any) -> Any:
     """
     校验用户具备全局管理权限。

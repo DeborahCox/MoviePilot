@@ -26,6 +26,23 @@ class Statistic(BaseModel):
     music_count_month: Optional[int] = Field(default=0, description="本月新增音乐数量")
 
 
+class DashboardRecentImport(BaseModel):
+    """
+    仪表盘最近整理卡片所需的脱敏展示数据。
+    """
+
+    id: int = Field(description="整理记录标识")
+    title: Optional[str] = Field(default=None, description="媒体标题")
+    year: Optional[str] = Field(default=None, description="媒体年份")
+    image: Optional[str] = Field(default=None, description="海报地址")
+    type: Optional[str] = Field(default=None, description="媒体类型")
+    seasons: Optional[str] = Field(default=None, description="季信息")
+    episodes: Optional[str] = Field(default=None, description="集信息")
+    date: Optional[str] = Field(default=None, description="完成时间")
+    size: Optional[int] = Field(default=None, description="文件大小，单位为字节")
+    audio_specs: Optional[str] = Field(default=None, description="音乐规格摘要")
+
+
 class Storage(BaseModel):
     """
     仪表板存储空间统计。

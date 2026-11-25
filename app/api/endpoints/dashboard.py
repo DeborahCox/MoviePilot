@@ -2,6 +2,7 @@
 汇总仪表盘所需的服务统计、系统状态与活动数据。
 """
 
+from collections.abc import Mapping
 from typing import Annotated, Any, List, Optional
 
 from fastapi import Depends
@@ -9,9 +10,15 @@ from fastapi import Depends
 from app.adapters.system.host import SystemUtils
 from app.adapters.web.security.access import verify_apitoken
 from app.api.context import get_api_runtime_config, resolve_api_runtime_config
-from app.api.dependencies.auth import get_current_active_superuser
+from app.api.dependencies.auth import (
+    get_current_active_superuser,
+    get_current_dashboard_media_viewer,
+    get_current_dashboard_recent_imports_viewer,
+    get_current_dashboard_runtime_viewer,
+    get_current_dashboard_scheduler_viewer,
+)
 from app.api.dependencies.dashboard import sample_downloader
-from app.api.dependencies.history import get_dashboard_query_service
+from app.api.dependencies.history import get_dashboard_query_service, get_history_query_service
 from app.api.response import (
     CompatibleCountParam,
     CompatiblePageParam,
@@ -19,10 +26,12 @@ from app.api.response import (
 )
 from app.application.configuration import ApiRuntimeConfig
 from app.application.dashboard import DashboardQueryService
+from app.application.history import HistoryQueryService
 from app.application.scheduling import get_scheduler
 from app.chain.dashboard import DashboardChain
 from app.runtime.execution import run_in_threadpool
 from app.schemas.dashboard import DashboardMemoryInfo as _SchemaDashboardMemoryInfo
+from app.schemas.dashboard import DashboardRecentImport as _SchemaDashboardRecentImport
 from app.schemas.dashboard import DashboardSystemInfo as _SchemaDashboardSystemInfo
 from app.schemas.dashboard import DownloaderInfo as _SchemaDownloaderInfo
 from app.schemas.dashboard import ProcessInfo as _SchemaProcessInfo
@@ -61,7 +70,7 @@ def _build_downloader(
 def statistic(
     name: Optional[str] = None,
     service: DashboardQueryService = Depends(get_dashboard_query_service),
-    _: Any = Depends(get_current_active_superuser),
+    _: Any = Depends(get_current_dashboard_media_viewer),
 ) -> Any:
     """
     查询媒体数量统计信息
@@ -83,7 +92,7 @@ def statistic2(
 
 
 @router.get("/storage", summary="本地存储空间", response_model=_SchemaStorage)
-def storage(_: Any = Depends(get_current_active_superuser)) -> Any:
+def storage(_: Any = Depends(get_current_dashboard_runtime_viewer)) -> Any:
     """
     查询本地存储空间信息
     """
@@ -120,7 +129,7 @@ def system_info(_: Any = Depends(get_current_active_superuser)) -> Any:
 def downloader(
     name: Optional[str] = None,
     runtime_config: ApiRuntimeConfig = Depends(get_api_runtime_config),
-    _: Any = Depends(get_current_active_superuser),
+    _: Any = Depends(get_current_dashboard_runtime_viewer),
 ) -> Any:
     """
     查询下载器信息
@@ -151,7 +160,7 @@ def downloader2(
 
 
 @router.get("/schedule", summary="后台服务", response_model=List[_SchemaScheduleInfo])
-async def schedule(_: Any = Depends(get_current_active_superuser), page: CompatiblePageParam = None, count: CompatibleCountParam = None) -> Any:
+async def schedule(_: Any = Depends(get_current_dashboard_scheduler_viewer), page: CompatiblePageParam = None, count: CompatibleCountParam = None) -> Any:
     """
     查询后台服务信息
     """
@@ -165,7 +174,7 @@ async def schedule(_: Any = Depends(get_current_active_superuser), page: Compati
     response_model=_SchemaResponse[_SchemaScheduleProgress],
 )
 async def schedule_progress(
-    job_id: str, _: Any = Depends(get_current_active_superuser)
+    job_id: str, _: Any = Depends(get_current_dashboard_scheduler_viewer)
 ) -> Any:
     """
     查询指定后台服务的执行进度。
@@ -208,11 +217,48 @@ async def schedule_progress2(
     return _SchemaResponse(success=True, data=progress.model_dump())
 
 
+@router.get(
+    "/recent-imports", summary="最近整理入库（脱敏）", response_model=List[_SchemaDashboardRecentImport]
+)
+async def recent_imports(
+    count: int = 10,
+    service: HistoryQueryService = Depends(get_history_query_service),
+    _: Any = Depends(get_current_dashboard_recent_imports_viewer),
+) -> Any:
+    """
+    返回仪表盘最近整理卡片所需的脱敏数据，不暴露源文件路径。
+    """
+    limit = max(1, min(count, 20))
+    page = await service.list_transfer(page=1, count=limit, status=True)
+    items: list[_SchemaDashboardRecentImport] = []
+    for history in page.list:
+        size: Optional[int] = None
+        source_item = history.src_fileitem
+        if isinstance(source_item, Mapping):
+            raw_size = source_item.get("size")
+            if isinstance(raw_size, (int, float)) and not isinstance(raw_size, bool):
+                size = int(raw_size)
+        items.append(
+            _SchemaDashboardRecentImport(
+                id=history.id,
+                title=history.title,
+                year=history.year,
+                image=history.image,
+                type=history.type,
+                seasons=history.seasons,
+                episodes=history.episodes,
+                date=history.date,
+                size=size,
+            )
+        )
+    return items
+
+
 @router.get("/transfer", summary="文件整理统计", response_model=List[int])
 async def transfer(
     days: Optional[int] = 7,
     service: DashboardQueryService = Depends(get_dashboard_query_service),
-    _: Any = Depends(get_current_active_superuser),
+    _: Any = Depends(get_current_dashboard_recent_imports_viewer),
     page: CompatiblePageParam = None,
     count: CompatibleCountParam = None,
 ) -> Any:
@@ -223,7 +269,7 @@ async def transfer(
 
 
 @router.get("/cpu", summary="获取当前CPU使用率", response_model=float)
-def cpu(_: Any = Depends(get_current_active_superuser)) -> Any:
+def cpu(_: Any = Depends(get_current_dashboard_runtime_viewer)) -> Any:
     """
     获取当前CPU使用率
     """
@@ -243,7 +289,7 @@ def cpu2(_: Annotated[str, Depends(verify_apitoken)]) -> Any:
     summary="获取当前应用与系统内存信息",
     response_model=_SchemaDashboardMemoryInfo,
 )
-def memory(_: Any = Depends(get_current_active_superuser)) -> Any:
+def memory(_: Any = Depends(get_current_dashboard_runtime_viewer)) -> Any:
     """
     获取当前应用与系统内存信息
     """
@@ -263,7 +309,7 @@ def memory2(_: Annotated[str, Depends(verify_apitoken)]) -> Any:
 
 
 @router.get("/network", summary="获取当前网络流量", response_model=List[int])
-def network(_: Any = Depends(get_current_active_superuser), page: CompatiblePageParam = None, count: CompatibleCountParam = None) -> Any:
+def network(_: Any = Depends(get_current_dashboard_runtime_viewer), page: CompatiblePageParam = None, count: CompatibleCountParam = None) -> Any:
     """
     获取当前网络流量（上行和下行流量，单位：bytes/s）
     """
