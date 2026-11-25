@@ -199,7 +199,7 @@ def test_stream_info_rejects_explicit_and_resolved_restricted_instance(monkeypat
         endpoint,
         "_resolve_stream_item",
         lambda itemid, user_id, server=None: (
-            "bob 的 Plex", SimpleNamespace(item_id=itemid, item_type="Movie"), None
+            "bob 的 Plex", SimpleNamespace(item_id=itemid, item_type="Movie", path=None), None
         ),
     )
     client = _client(monkeypatch, _user("alice"))
