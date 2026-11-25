@@ -210,6 +210,13 @@ def get_current_dashboard_recent_imports_viewer(current_user: Any = Depends(get_
     return _ensure_dashboard_permission(current_user, "dashboard.recentImports")
 
 
+def get_current_dashboard_system_viewer(current_user: Any = Depends(get_current_active_user)) -> Any:
+    """
+    返回可查看仪表盘系统摘要的激活用户。
+    """
+    return _ensure_dashboard_permission(current_user, "dashboard.system")
+
+
 def _ensure_manage_user(current_user: Any) -> Any:
     """
     校验用户具备全局管理权限。

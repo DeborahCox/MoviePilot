@@ -24,6 +24,7 @@ from app.api.deps import (
     get_current_dashboard_recent_imports_viewer,
     get_current_dashboard_runtime_viewer,
     get_current_dashboard_scheduler_viewer,
+    get_current_dashboard_system_viewer,
     get_current_dashboard_viewer,
 )
 from app.api.endpoints import agent as agent_endpoint
@@ -164,7 +165,7 @@ def test_dashboard_endpoints_use_feature_permissions():
     assert _dependency_of(dashboard_endpoint.memory, "_") is get_current_dashboard_runtime_viewer
     assert _dependency_of(dashboard_endpoint.network, "_") is get_current_dashboard_runtime_viewer
     assert _dependency_of(dashboard_endpoint.processes, "_") is get_current_active_superuser
-    assert _dependency_of(dashboard_endpoint.system_info, "_") is get_current_active_superuser
+    assert _dependency_of(dashboard_endpoint.system_info, "_") is get_current_dashboard_system_viewer
 
 
 def test_plugin_dashboard_endpoints_accept_dashboard_viewers():
@@ -192,6 +193,7 @@ def test_dashboard_viewer_enforces_feature_defaults():
     for dependency in (
         get_current_dashboard_scheduler_viewer,
         get_current_dashboard_recent_imports_viewer,
+        get_current_dashboard_system_viewer,
     ):
         with pytest.raises(HTTPException) as error:
             dependency(viewer)
@@ -200,10 +202,18 @@ def test_dashboard_viewer_enforces_feature_defaults():
 
     enabled = SimpleNamespace(
         is_superuser=False,
-        permissions={"dashboard": True, "features": {"dashboard.scheduler": True, "dashboard.recentImports": True}},
+        permissions={
+            "dashboard": True,
+            "features": {
+                "dashboard.scheduler": True,
+                "dashboard.recentImports": True,
+                "dashboard.system": True,
+            },
+        },
     )
     assert get_current_dashboard_scheduler_viewer(enabled) is enabled
     assert get_current_dashboard_recent_imports_viewer(enabled) is enabled
+    assert get_current_dashboard_system_viewer(enabled) is enabled
 
     without_dashboard = SimpleNamespace(is_superuser=False, permissions={"dashboard": False, "features": {}})
     with pytest.raises(HTTPException):

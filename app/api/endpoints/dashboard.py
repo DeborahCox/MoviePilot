@@ -16,6 +16,7 @@ from app.api.dependencies.auth import (
     get_current_dashboard_recent_imports_viewer,
     get_current_dashboard_runtime_viewer,
     get_current_dashboard_scheduler_viewer,
+    get_current_dashboard_system_viewer,
 )
 from app.api.dependencies.dashboard import sample_downloader
 from app.api.dependencies.history import get_dashboard_query_service, get_history_query_service
@@ -118,7 +119,7 @@ def processes(_: Any = Depends(get_current_active_superuser), page: CompatiblePa
 
 
 @router.get("/system", summary="系统摘要信息", response_model=_SchemaDashboardSystemInfo)
-def system_info(_: Any = Depends(get_current_active_superuser)) -> Any:
+def system_info(_: Any = Depends(get_current_dashboard_system_viewer)) -> Any:
     """
     查询仪表板系统摘要信息
     """
