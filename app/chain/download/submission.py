@@ -57,7 +57,7 @@ from app.schemas.download import (
     ExistingTaskRejection,
     is_unconfirmed_download_message,
 )
-from app.schemas.event import ResourceDownloadEventData
+from app.schemas.event import ResourceDownloadEventData, ResourceSubmitEventData
 from app.schemas.exception import RateLimitExceededException
 from app.schemas.file import FileURI
 from app.schemas.media import normalize_media_source, resolve_media_identity
@@ -761,8 +761,12 @@ class _DownloadResourceOwner(_DownloadOwnerBase):
         下载种子文件，如果是磁力链，会返回磁力链接本身
         换票种子按站点资源和原始换票凭据复用本地内容，命中后不再请求临时链接。
 
+        :param torrent: 包含站点身份和种子地址的候选
+        :param channel: 下载失败通知的渠道
+        :param source: 下载请求来源，指定通知渠道时用于路由通知
+        :param userid: 接收下载失败通知的用户
         :param on_failure: 将本次具体失败原因交还准备流程，保持返回元组与并发调用隔离
-        :param retry: 是否对普通 GET 瞬时失败退避重试；仅核对集数的读取应关闭
+        :param retry: 是否对普通 GET 失败退避重试并缓存无效地址；仅核对集数时关闭
         :param notify: 失败时是否推送下载失败告警；仅核对集数的读取应关闭
         :return: 种子内容，种子目录名，种子文件清单
         """
@@ -790,7 +794,7 @@ class _DownloadResourceOwner(_DownloadOwnerBase):
         if not content:
             if on_failure:
                 on_failure(error_msg or "下载种子内容为空")
-            if not enclosure.startswith("[") and error_msg and "种子数据有误" in error_msg:
+            if retry and not enclosure.startswith("[") and "种子数据有误" in (error_msg or ""):
                 helper.add_invalid(enclosure)
             logger.error(f"下载种子文件失败：{torrent.title}，{error_msg}")
             if notify:
@@ -991,6 +995,67 @@ class _DownloadResourceOwner(_DownloadOwnerBase):
             logger.warn(str(err))
             return save_path, str(err)
 
+    @staticmethod
+    def _apply_resource_submit_event(
+            *,
+            prepared: _PreparedDownload,
+            context: Context,
+            task_hashes: frozenset[str],
+            episodes: Optional[Set[int]],
+            channel: Optional[NotificationChannel],
+            source: Optional[str],
+            downloader: Optional[str],
+            userid: Union[str, int, None],
+            username: Optional[str],
+            label: Optional[str],
+            user_specified: bool,
+    ) -> Optional[str]:
+        """
+        在种子内容与真实哈希准备完成后、提交下载器之前触发链式取消检查。
+
+        :param prepared: 已解析出种子字节、文件清单与最终目录的本地提交事实
+        :param context: 本次下载的资源上下文
+        :param task_hashes: 从种子内容或磁力链接解析出的真实 info_hash 集合
+        :param episodes: 本次提交的目标集数
+        :param channel: 通知渠道
+        :param source: 下载来源标识
+        :param downloader: 调用方指定的下载器名称
+        :param userid: 触发下载的用户标识
+        :param username: 触发下载的用户名
+        :param label: 下载任务标签
+        :param user_specified: 是否为用户手动明确指定该种子
+        :return: 被事件取消时返回取消说明；允许提交时返回 None
+        """
+        event_data = ResourceSubmitEventData(
+            context=context,
+            hashes=sorted(task_hashes),
+            episodes=set(episodes or (prepared.meta.episode_list if prepared.meta else [])),
+            channel=channel,
+            origin=source,
+            downloader=downloader or prepared.site_downloader,
+            save_path=prepared.download_uri,
+            folder_name=prepared.folder_name,
+            file_list=list(prepared.file_list),
+            user_specified=user_specified,
+            options={
+                "userid": userid,
+                "username": username,
+                "media_category": prepared.media.category if prepared.media else None,
+                "label": label,
+            },
+        )
+        event = eventmanager.send_event(ChainEventType.ResourceSubmit, event_data)
+        if event and event.event_data:
+            event_data = cast(ResourceSubmitEventData, event.event_data)
+            if event_data.cancel:
+                logger.debug(
+                    "Resource submit canceled by event: %s, Reason: %s",
+                    event_data.source,
+                    event_data.reason,
+                )
+                return event_data.reason or "下载提交被事件取消"
+        return None
+
 
 class DownloadSubmissionOwner(_DownloadResourceOwner):
     """
@@ -1098,6 +1163,24 @@ class DownloadSubmissionOwner(_DownloadResourceOwner):
             if governance:
                 governance.report(context, "rejected", reason)
             return (None, reason) if return_detail else None
+        task_hashes = torrent_rules.download_hashes(prepared.torrent_content)
+        submit_error = self._apply_resource_submit_event(
+            prepared=prepared,
+            context=context,
+            task_hashes=task_hashes,
+            episodes=episodes,
+            channel=channel,
+            source=source,
+            downloader=downloader,
+            userid=userid,
+            username=username,
+            label=label,
+            user_specified=user_specified,
+        )
+        if submit_error:
+            if governance:
+                governance.report(context, "rejected", submit_error)
+            return (None, "下载被事件取消") if return_detail else None
         download_hash, error_msg = self._submit_prepared_download(
             prepared=prepared,
             context=context,
@@ -1112,6 +1195,7 @@ class DownloadSubmissionOwner(_DownloadResourceOwner):
             governance=governance,
             download_category=download_category,
             user_specified=user_specified,
+            task_hashes=task_hashes,
         )
         if governance:
             if download_hash:
@@ -1327,6 +1411,7 @@ class DownloadSubmissionOwner(_DownloadResourceOwner):
         governance: Optional[SubscriptionDownloadGovernance],
         download_category: Optional[str] = None,
         user_specified: bool = False,
+        task_hashes: Optional[frozenset[str]] = None,
     ) -> tuple[Optional[str], Optional[str]]:
         """
         在可取消边界后调用下载器，并分派成功或拒绝结算。
@@ -1353,13 +1438,17 @@ class DownloadSubmissionOwner(_DownloadResourceOwner):
         # 音乐尚无目录分类时仍提供稳定的下载器分类，不回写媒体的目录或元数据分类。
         if not category and prepared.media.type == MediaType.MUSIC:
             category = MediaType.MUSIC.value
-        task_hashes = torrent_rules.download_hashes(prepared.torrent_content)
+        resolved_hashes = (
+            task_hashes
+            if task_hashes is not None
+            else torrent_rules.download_hashes(prepared.torrent_content)
+        )
         # 读取确认记录 → 下载器受理 → 写入下载历史整段持有任务锁，见 downloader_task_locks：
         # 已有任务上的追加与整理链回写、删除、暂停开始互斥，确认记录的读取、合并与写回也不会被并发提交打断。
         result: Optional[Tuple[Optional[str], Optional[str], Optional[str], str]]
-        with downloader_task_locks.hold(task_hashes):
+        with downloader_task_locks.hold(resolved_hashes):
             try:
-                previous_selection = self._existing_task_confirmed_selection(task_hashes)
+                previous_selection = self._existing_task_confirmed_selection(resolved_hashes)
             except Exception as err:
                 # 读不到历史时不能当成"没有历史"继续：受理后写回的确认记录只会剩下本次的文件，之前被取消的
                 # 文件从此不再受保护。数据库读不了时写历史同样会失败，直接按瞬时失败稍后重试，不调用下载器。
