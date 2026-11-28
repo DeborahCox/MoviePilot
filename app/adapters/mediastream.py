@@ -16,7 +16,7 @@ from cryptography.fernet import Fernet, InvalidToken
 from fastapi import HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
-from app.adapters.network.http import RequestUtils
+from app.adapters.network.http import HttpTlsError, RequestUtils
 from app.runtime.settings import get_runtime_setting
 from app.schemas.file import FileItem as _SchemaFileItem
 from app.schemas.mediaserver import MediaServerSubtitleTrack as _SchemaMediaServerSubtitleTrack
@@ -785,6 +785,61 @@ def _stream_origin(url: str) -> tuple[str, str, int]:
     return scheme, hostname, port
 
 
+def _enter_upstream_hop(
+    current_url: str,
+    headers: dict[str, str],
+    configured_hosts: set[str],
+    client: RequestUtils,
+    insecure_client: Optional[RequestUtils],
+) -> tuple[Any, AbstractContextManager[Any], RequestUtils, Optional[RequestUtils]]:
+    """
+    打开单跳上游流；若目标属于管理员显式配置的主机且发生 TLS 证书错误，允许单跳回退至非严格证书校验。
+    """
+    context = client.get_stream(
+        current_url,
+        headers=headers,
+        allow_redirects=False,
+        timeout=(10, 90),
+        raise_exception=True,
+    )
+    try:
+        return context.__enter__(), context, client, insecure_client
+    except HttpTlsError:
+        if _stream_origin(current_url)[1] not in configured_hosts:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="STRM 上游连接失败") from None
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="STRM 上游连接失败") from None
+
+    fallback_client = insecure_client or RequestUtils(timeout=30, verify=False)
+    retry_context = fallback_client.get_stream(
+        current_url,
+        headers=headers,
+        allow_redirects=False,
+        timeout=(10, 90),
+        raise_exception=True,
+    )
+    try:
+        return retry_context.__enter__(), retry_context, fallback_client, fallback_client
+    except Exception:
+        if insecure_client is None:
+            fallback_client.close()
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="STRM 上游连接失败") from None
+
+
+def _close_unused_stream_client(
+    used_client: RequestUtils,
+    strict_client: RequestUtils,
+    insecure_client: Optional[RequestUtils],
+) -> None:
+    """
+    关闭流式传输未选用的备用客户端实例，避免连接池句柄泄漏。
+    """
+    if used_client is insecure_client:
+        strict_client.close()
+    elif insecure_client is not None:
+        insecure_client.close()
+
+
 def _open_upstream_stream(
     url: str,
     range_header: Optional[str],
@@ -804,6 +859,7 @@ def _open_upstream_stream(
     :raises HTTPException: 上游不可用、目标不安全或重定向次数超限时
     """
     client = RequestUtils(timeout=30, verify=True)
+    insecure_client: Optional[RequestUtils] = None
     current_url = url
     initial_origin = _stream_origin(url)
     try:
@@ -814,17 +870,13 @@ def _open_upstream_stream(
                 headers.update(extra_headers)
             if range_header:
                 headers["Range"] = range_header
-            context = client.get_stream(
+            response, context, active_client, insecure_client = _enter_upstream_hop(
                 current_url,
-                headers=headers,
-                allow_redirects=False,
-                timeout=(10, 60),
-                raise_exception=True,
+                headers,
+                configured_hosts,
+                client,
+                insecure_client,
             )
-            try:
-                response = context.__enter__()
-            except Exception:
-                raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="STRM 上游连接失败") from None
             if response is None:
                 context.__exit__(None, None, None)
                 raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="STRM 上游连接失败")
@@ -835,10 +887,13 @@ def _open_upstream_stream(
                     raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="STRM 上游重定向无效")
                 current_url = urljoin(current_url, location)
                 continue
-            return response, context, client
+            _close_unused_stream_client(active_client, client, insecure_client)
+            return response, context, active_client
         raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="STRM 上游重定向次数过多")
     except Exception:
         client.close()
+        if insecure_client is not None:
+            insecure_client.close()
         raise
 
 
